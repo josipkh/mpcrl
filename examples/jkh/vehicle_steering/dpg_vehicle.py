@@ -1,0 +1,359 @@
+"""
+This module contains the environment for the vehicle steering problem.
+The system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynamics and Control".
+States are the lateral and heading errors and their derivatives (x = [ey ey_dot epsi epsi_dot]).
+The action is the (wheel) steering angle (u = delta).
+The reference yaw rate is modelled as an additional control input (will be fixed at runtime).
+"""
+
+
+import logging
+from typing import Any, Optional
+
+import casadi as cs
+import gymnasium as gym
+import numpy as np
+import numpy.typing as npt
+from csnlp import Nlp
+from csnlp.wrappers import Mpc
+from gymnasium.spaces import Box
+from gymnasium.wrappers import TimeLimit
+
+from mpcrl import (
+    LearnableParameter,
+    LearnableParametersDict,
+    LstdDpgAgent,
+    UpdateStrategy,
+)
+from mpcrl import exploration as E
+from mpcrl.optim import GradientDescent
+from mpcrl.util.control import dlqr
+from mpcrl.wrappers.agents import Log, RecordUpdates
+from mpcrl.wrappers.envs import MonitorEpisodes
+
+from vehicle_model import VehicleParams, get_discrete_system, get_bounds
+
+# %%
+# Defining the environment
+# ------------------------
+# First things first, we need to build the environment. We will use the :mod:`gymnasium`
+# library to do so. The most important methods are :func:`gymnasium.Env.reset` and
+# :func:`gymnasium.Env.step`, which will be called to reset the environment to its
+# initial state and to step the dynamics and receive a realization of the reward signal,
+# respectively. The environment is defined as a the following class.
+
+
+class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
+    """A simple discrete-time LTI system affected by uniform noise."""
+
+    nx = 4  # number of states
+    nu = 1  # number of inputs
+    A, B = get_discrete_system()  # dynamics matrices
+    x_lb, x_ub, a_lb, a_ub, e_lb, e_ub = get_bounds()  # bounds of state, action and disturbance
+    x_bnd = (x_lb, x_ub)  # bounds of state
+    a_bnd = (a_lb, a_ub)  # bounds of control input
+    w = np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
+    e_bnd = (e_lb, e_ub)  # uniform noise bounds
+
+    # extremely recommended to bound the action space with additive exploration so that
+    # we can clip the action before applying it to the system
+    action_space = Box(*a_bnd, (nu,), np.float64)
+
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[dict[str, Any]] = None,
+    ) -> tuple[npt.NDArray[np.floating], dict[str, Any]]:
+        """Resets the state of the LTI system."""
+        super().reset(seed=seed, options=options)
+        self.x = np.asarray([0.0, 0.0, 0.0, 0.0]).reshape(self.nx, 1)
+        return self.x, {}
+
+    def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
+        """Computes the stage cost :math:`L(s,a)`."""
+        lb, ub = self.x_bnd
+        return (
+            0.5
+            * (
+                np.square(state).sum()
+                + 0.5 * action**2
+                + self.w.T @ np.maximum(0, lb - state)
+                + self.w.T @ np.maximum(0, state - ub)
+            ).item()
+        )
+
+    def step(
+        self, action: cs.DM
+    ) -> tuple[npt.NDArray[np.floating], float, bool, bool, dict[str, Any]]:
+        """Steps the LTI system."""
+        action = np.asarray(action).item()
+        disturbance = self.np_random.uniform(*self.e_bnd)  # road curvature
+        x_new = self.A @ self.x + self.B @ np.array([[action], [disturbance]])
+
+        # add road bank effect
+        road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
+        x_new += np.array([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
+
+        r = self.get_stage_cost(self.x, action)
+        self.x = x_new
+        return x_new, r, False, False, {}
+
+
+# %%
+# Defining the MPC controller
+# ---------------------------
+# The second component is the MPC controller. We'll create a custom that, of course,
+# inherits from :class:`csnlp.wrappers.Mpc`. The implementation is as follows, and it is
+# in line with the theory presented above.
+
+
+class LinearMpc(Mpc[cs.SX]):
+    """A simple linear MPC controller."""
+
+    horizon = 10
+    discount_factor = 0.9
+    A_init, B_init = get_discrete_system()
+    learnable_pars_init = {
+        "V0": np.zeros(LtiSystem.nx),  # cost modification, V0*x0
+        "x_lb": np.zeros(LtiSystem.nx),  # constraint backoff
+        "x_ub": np.zeros(LtiSystem.nx),  # constraint backoff
+        "b": np.zeros(LtiSystem.nx),  # affine term in the dynamics
+        "f": np.zeros(LtiSystem.nx + LtiSystem.nu),  # affine term in the cost
+        "A": A_init,
+        "B": B_init[:,0,np.newaxis],  # just the steering input
+    }
+
+    def __init__(self) -> None:
+        N = self.horizon
+        gamma = self.discount_factor
+        w = LtiSystem.w
+        nx, nu = LtiSystem.nx, LtiSystem.nu
+        x_bnd, a_bnd = LtiSystem.x_bnd, LtiSystem.a_bnd
+        nlp = Nlp[cs.SX]()
+        super().__init__(nlp, N)
+
+        # parameters
+        V0 = self.parameter("V0", (nx,))
+        x_lb = self.parameter("x_lb", (nx,))
+        x_ub = self.parameter("x_ub", (nx,))
+        b = self.parameter("b", (nx, 1))
+        f = self.parameter("f", (nx + nu, 1))
+        A = self.parameter("A", (nx, nx))
+        B = self.parameter("B", (nx, nu))
+
+        # variables (state, action, slack)
+        x, _ = self.state("x", nx, bound_initial=False)
+        u, _ = self.action("u", nu, lb=a_bnd[0], ub=a_bnd[1])
+        s, _, _ = self.variable("s", (nx, N), lb=0)
+
+        # dynamics
+        self.set_affine_dynamics(A, B, c=b)
+
+        # other constraints
+        self.constraint("x_lb", x_bnd[0] + x_lb - s, "<=", x[:, 1:])
+        self.constraint("x_ub", x[:, 1:], "<=", x_bnd[1] + x_ub + s)
+
+        # objective
+        A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]
+        S = cs.DM(dlqr(A_init, B_init, 0.5 * np.eye(nx), 0.25 * np.eye(nu))[1])
+        gammapowers = cs.DM(gamma ** np.arange(N)).T
+        self.minimize(
+            V0.T @ x[:, 0]  # to have a derivative, V0 must be a function of the state
+            + cs.bilin(S, x[:, -1])
+            + cs.sum2(f.T @ cs.vertcat(x[:, :-1], u))
+            + 0.5
+            * cs.sum2(
+                gammapowers * (cs.sum1(x[:, :-1] ** 2) + 0.5 * cs.sum1(u**2) + w.T @ s)
+            )
+        )
+
+        # solver
+        solver = "QP"  # "NLP" or "QP"
+        if solver == "NLP":
+            opts = {
+                "expand": True,
+                "print_time": False,
+                "bound_consistency": True,
+                "calc_lam_p": False,
+                "fatrop": {"max_iter": 500, "print_level": 0},
+            }
+            # additional options from the fatrop demo
+            # opts["structure_detection"] = "auto",
+            # opts["debug"] = True
+            # opts["equality"] = [True for _ in range(N * x.numel())]
+
+            # (codegen of helper functions)
+            # opts["jit"] = True
+            # opts["jit_temp_suffix"] = False
+            # opts["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
+
+            self.init_solver(opts, solver="fatrop", type="nlp")
+        elif solver == "QP":
+            opts = {"osqp": {"verbose":False}}
+            self.init_solver(opts, solver="osqp", type="conic")
+
+
+# %%
+# Simulation
+# ----------
+# So far, we have only defined the classes for the environment and the MPC controller.
+# Now, it is time to instantiate these and run the simulation. This is comprised of
+# multiple steps, which are detailed below.
+#
+# 1. We instantiate the environment. Note how it is wrapped in two different wrappers:
+#    :class:`gymnasium.wrappers.TimeLimit` is used to impose a maximum amount of steps
+#    to be simulated, whereas :class:`mpcrl.wrappers.envs.MonitorEpisodes` is used to
+#    record the state, action and reward signals at each time step for plotting
+#    purposes.
+# 2. We instantiate the MPC controller and define its learnable parameters.
+# 3. We instantiate the DPG agent. We pass different options to it, such as the update
+#    strategy, the optimizer, the Hessian type, etc. For plotting purposes, it is also
+#    wrapped such that the updated parameters are recorded. And we also log the progress
+#    of the simulation.
+# 4. We run the simulation. Under the hood, the agent will interact with the
+#    environment, collect data, and update the parameters of the MPC controller.
+# 5. Finally, we plot the results. The first plot shows the evolution of the states and
+#    the control action, and the corresponding bounds. The second plot shows the
+#    performance per rollout, the norm of the estimated policy gradient per rollout, and
+#    time-wise stage cost realizations. The last plot shows how each learnable parameter
+#    evolves over time.
+
+if __name__ == "__main__":
+    # instantiate the env and wrap it - since we will train for only one long episode,
+    # tell the DPG agent to perform its LSTD computations over subtrajectories of length
+    # 100.
+    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=10_000))
+    rollout_length = 100
+
+    # now build the MPC and the dict of learnable parameters
+    mpc = LinearMpc()
+    learnable_pars = LearnableParametersDict[cs.SX](
+        (
+            LearnableParameter(name, val.shape, val, sym=mpc.parameters[name])
+            for name, val in mpc.learnable_pars_init.items()
+        )
+    )
+
+    # build and wrap appropriately the agent
+    agent = Log(
+        RecordUpdates(
+            LstdDpgAgent(
+                mpc=mpc,
+                learnable_parameters=learnable_pars,
+                discount_factor=mpc.discount_factor,
+                optimizer=GradientDescent(learning_rate=1e-6),
+                update_strategy=UpdateStrategy(rollout_length, "on_timestep_end"),
+                rollout_length=rollout_length,
+                exploration=E.OrnsteinUhlenbeckExploration(0.0, 0.05*LtiSystem.a_bnd[1], mode="additive"),
+                record_policy_performance=True,
+                record_policy_gradient=True,
+                use_last_action_on_fail=True,
+            )
+        ),
+        level=logging.DEBUG,
+        log_frequencies={"on_timestep_end": 1000},
+    )
+
+    # launch the training simulation
+    agent.train(env=env, episodes=1, seed=69)
+
+    # plot the results
+    import matplotlib.pyplot as plt
+    plt.rcParams['axes.xmargin'] = 0  # tight x range
+
+    X = env.get_wrapper_attr("observations")[0].squeeze().T
+    U = env.get_wrapper_attr("actions")[0].squeeze()
+    R = env.get_wrapper_attr("rewards")[0]
+    
+    vehicle_params = VehicleParams()
+    isw = vehicle_params.isw
+
+    e1 = X[0,:]
+    e2 = X[2,:]
+    delta_sw = isw * np.rad2deg(U)
+    x = range(len(e1))
+    steer_max = np.rad2deg(vehicle_params.sw_max)
+
+    # results in the error frame
+    fig, ax = plt.subplots(5, sharex=True, constrained_layout=True)
+    fig.suptitle('Vehicle steering in closed loop (error frame)')
+    ax[0].plot(x, e1)
+    ax[0].set_ylabel('$e_y$ [m]')
+    ax[1].plot(x, np.rad2deg(e2))
+    ax[1].set_ylabel(r'$e_\psi$ [deg]')
+    ax[2].plot(x, X[1,:])
+    ax[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
+    ax[3].plot(x, np.rad2deg(X[3,:]))
+    ax[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
+    ax[4].plot(x[:-1], delta_sw)
+    ax[4].axhline( steer_max, color="r", linestyle='--')
+    ax[4].axhline(-steer_max, color="r", linestyle='--')
+    ax[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
+    ax[4].set_xlabel('$k$')
+
+    # # results in the inertial frame
+    # _, y_ref, psi_ref = get_double_lane_change_data(x)
+    # _, y = frenet2inertial(e1=e1, e2=e2, psi_ref=psi_ref, vx=env.vx, dt=env.dt)
+    # psi = psi_ref + e2
+
+    # fig, ax = plt.subplots(3, sharex=True, constrained_layout=True)
+    # fig.suptitle('Vehicle steering in closed loop (inertial frame)')
+
+    # ax[0].plot(x, y)
+    # ax[0].plot(x, y_ref, 'r--')    
+    # ax[0].set_ylabel('$y$ [m]')
+
+    # ax[1].plot(x, np.rad2deg(psi))
+    # ax[1].plot(x, np.rad2deg(psi_ref), 'r--')
+    # ax[1].set_ylabel('$\psi$ [deg]')
+
+    # ax[2].plot(x, delta_sw)
+    # ax[2].axhline( steer_max, color="r", linestyle='--')
+    # ax[2].axhline(-steer_max, color="r", linestyle='--')
+    # ax[2].set_ylabel('$\delta_\mathrm{sw}$ [deg]')
+    # ax[2].set_xlabel('$x$ [m]')
+
+
+    # _, axs = plt.subplots(3, 1, constrained_layout=True, sharex=True)
+    # axs[0].plot(X[0])
+    # axs[1].plot(X[1])
+    # axs[2].plot(U)
+    # for i in range(2):
+    #     axs[0].axhline(env.get_wrapper_attr("x_bnd")[i][0], color="r")
+    #     axs[1].axhline(env.get_wrapper_attr("x_bnd")[i][1], color="r")
+    #     axs[2].axhline(env.get_wrapper_attr("a_bnd")[i], color="r")
+    # axs[0].set_ylabel("$s_1$")
+    # axs[1].set_ylabel("$s_2$")
+    # axs[2].set_ylabel("$a$")
+
+    _, axs = plt.subplots(3, 1, constrained_layout=True)
+    axs[0].plot(agent.policy_performances)
+    axs[1].semilogy(np.linalg.norm(agent.policy_gradients, axis=1))
+    axs[2].semilogy(R, "o", markersize=1)
+    axs[0].set_ylabel(r"$J(\pi_\theta)$")
+    axs[1].set_ylabel(r"$||\nabla_\theta J(\pi_\theta)||$")
+    axs[2].set_ylabel("$L$")
+
+    _, axs = plt.subplots(3, 2, constrained_layout=True, sharex=True)
+    axs[0, 0].plot(np.asarray(agent.updates_history["b"]))
+    axs[0, 1].plot(
+        np.stack(
+            [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
+        ),
+    )
+    axs[1, 0].plot(np.asarray(agent.updates_history["f"]))
+    axs[1, 1].plot(np.asarray(agent.updates_history["V0"]))
+    axs[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
+    axs[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
+    axs[0, 0].set_ylabel("$b$")
+    axs[0, 1].set_ylabel("$x$ backoff")
+    axs[1, 0].set_ylabel("$f$")
+    axs[1, 1].set_ylabel("$V_0$")
+    axs[2, 0].set_ylabel("$A$")
+    axs[2, 1].set_ylabel("$B$")
+
+    plt.show(block=False)
+    print("Press ENTER to close the plot")
+    input()
+    plt.close()
