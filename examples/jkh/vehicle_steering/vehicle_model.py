@@ -15,13 +15,13 @@ from utils import contains_symbolics, cont2discrete_symbolic
 
 @dataclass(kw_only=True)
 class VehicleParams:
-    cf:     float | ca.SX = 72705.0                 # [N/rad]   front cornering stiffness (for one tire)
-    cr:     float | ca.SX = 72705.0                 # [N/rad]   rear cornering stiffness (for one tire)
+    cf:     float | ca.SX = 63271.7                 # [N/rad]   front cornering stiffness (for one tire)
+    cr:     float | ca.SX = 63271.7                 # [N/rad]   rear cornering stiffness (for one tire)
     m:      float | ca.SX = 1600.0                  # [kg]      vehicle mass
-    vx:     float | ca.SX = 60 / 3.6                # [m/s]     longitudinal vehicle speed
-    lf:     float | ca.SX = 1.311                   # [m]       distance from the center of gravity to the front axle
-    lr:     float | ca.SX = 1.311                   # [m]       distance from the center of gravity to the rear axle
-    iz:     float | ca.SX = 2394.0                  # [kg*m^2]  vehicle moment of inertia
+    vx:     float | ca.SX = 15.6                    # [m/s]     longitudinal vehicle speed
+    lf:     float | ca.SX = 1.1578                  # [m]       distance from the center of gravity to the front axle
+    lr:     float | ca.SX = 1.4642                  # [m]       distance from the center of gravity to the rear axle
+    iz:     float | ca.SX = 2675.7                  # [kg*m^2]  vehicle moment of inertia
     isw:    float | ca.SX = 13                      # [-]       steering ratio
     sw_max: float | ca.SX = float(np.deg2rad(90))   # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
 
@@ -133,8 +133,19 @@ def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
 
 
 def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
+    """Returns the quadratic cost matrices for the controller (x'Qx + u'Ru)."""
     Q = np.diag([1, 1e-3, 1, 1e-3])
     R = np.diag([1])
     return Q, R
+
+def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[np.ndarray]:
+    """Returns the matrices for transforming the system to a non-dimensional form."""
+    vx = vehicle_params.vx
+    L = vehicle_params.lf + vehicle_params.lr
+
+    Mx = np.diag([L, vx, 1, vx/L])  # state is [ey, ey_dot, epsi, epsi_dot]
+    Mu = np.diag([1])  # input is an angle, no transformation needed
+    Mt = L/vx  # time transformation
+    return Mx, Mu, Mt 
 
 
