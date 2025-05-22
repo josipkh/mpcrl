@@ -1,11 +1,13 @@
 """
-This module contains the environment for the vehicle steering problem.
-The system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynamics and Control".
+This example applies the DPG-LSTDQ algorithm to the vehicle steering problem.
+The LTI system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynamics and Control":
+https://link.springer.com/book/10.1007/978-1-4614-1433-9
 States are the lateral and heading errors and their derivatives (x = [ey ey_dot epsi epsi_dot]).
 The action is the (wheel) steering angle (u = delta).
-The reference yaw rate is modelled as an additional control input (will be fixed at runtime).
+The reference yaw rate is modelled as a random disturbance (can also be fixed at runtime).
+Additionally, the constant road bank angle represents a constant disturbance.
+The resulting task is esentially a stabilization problem (LQR).
 """
-
 
 import logging
 from typing import Any, Optional

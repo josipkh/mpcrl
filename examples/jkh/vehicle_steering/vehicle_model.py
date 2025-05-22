@@ -1,11 +1,15 @@
+"""
+This module contains the dynamics model for the vehicle steering problem.
+The system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynamics and Control".
+States are the lateral and heading errors and their derivatives (x = [ey ey_dot epsi epsi_dot]).
+The action is the (wheel) steering angle (u = delta).
+The reference yaw rate is modelled as an additional control input (will be fixed at runtime).
+"""
+
 import numpy as np
-import gymnasium as gym
 import casadi as ca
 from scipy.signal import cont2discrete
-from scipy.integrate import solve_ivp
 from dataclasses import dataclass
-from typing import Any
-import matplotlib.pyplot as plt
 from utils import contains_symbolics, cont2discrete_symbolic
 
 
