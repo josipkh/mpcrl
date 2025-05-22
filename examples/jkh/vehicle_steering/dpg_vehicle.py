@@ -91,12 +91,12 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         disturbance = self.np_random.uniform(*self.e_bnd)  # road curvature
         x_new = self.A @ self.x + self.B @ np.array([[action], [disturbance]])
 
-        # add road bank effect
+        # add road bank effect (constant disturbance)
         road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
         x_new += np.array([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
-        r = self.get_stage_cost(self.x, action)
         self.x = x_new
+        r = self.get_stage_cost(self.x, action)
         return x_new, r, False, False, {}
 
 
@@ -123,6 +123,7 @@ class LinearMpc(Mpc[cs.SX]):
         "f": np.zeros(LtiSystem.nx + LtiSystem.nu),  # affine term in the cost
         "A": A_init,
         "B": B_init[:,0,np.newaxis],  # just the steering input
+        # "k": np.array([1.0]),  # test learning of individual parameters
     }
 
     def __init__(self) -> None:
@@ -142,6 +143,8 @@ class LinearMpc(Mpc[cs.SX]):
         f = self.parameter("f", (nx + nu, 1))
         A = self.parameter("A", (nx, nx))
         B = self.parameter("B", (nx, nu))
+        # k = self.parameter("k", (1,1))
+        # B = k * LtiSystem.B[:, 0, np.newaxis]  # just the steering input
 
         # variables (state, action, slack)
         x, _ = self.state("x", nx, bound_initial=False)
@@ -157,7 +160,7 @@ class LinearMpc(Mpc[cs.SX]):
 
         # objective
         Q, R = get_cost_matrices()
-        A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]
+        A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]  # LtiSystem.B[:, 0, np.newaxis]
         S = cs.DM(dlqr(A_init, B_init, Q, R)[1])  # terminal cost matrix
         gammapowers = cs.DM(gamma ** np.arange(N)).T
         objective = 0.0
