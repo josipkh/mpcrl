@@ -1,3 +1,6 @@
+# %% 
+# Imports
+# -------
 """
 This example applies the DPG-LSTDQ algorithm to the vehicle steering problem.
 The LTI system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynamics and Control":
@@ -263,6 +266,7 @@ if __name__ == "__main__":
     # launch the training simulation
     agent.train(env=env, episodes=1, seed=69)
 
+    # %%
     # plot the results
     import matplotlib.pyplot as plt
     plt.rcParams['axes.xmargin'] = 0  # tight x range
@@ -281,21 +285,22 @@ if __name__ == "__main__":
     steer_max = np.rad2deg(vehicle_params.sw_max)
 
     # results in the error frame
-    fig, ax = plt.subplots(5, sharex=True, constrained_layout=True)
-    fig.suptitle('Vehicle steering in closed loop (error frame)')
-    ax[0].plot(x, e1)
-    ax[0].set_ylabel('$e_y$ [m]')
-    ax[1].plot(x, np.rad2deg(e2))
-    ax[1].set_ylabel(r'$e_\psi$ [deg]')
-    ax[2].plot(x, X[1,:])
-    ax[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
-    ax[3].plot(x, np.rad2deg(X[3,:]))
-    ax[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
-    ax[4].plot(x[:-1], delta_sw)
-    ax[4].axhline( steer_max, color="r", linestyle='--')
-    ax[4].axhline(-steer_max, color="r", linestyle='--')
-    ax[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
-    ax[4].set_xlabel('$k$')
+    fig1, axs1 = plt.subplots(5, sharex=True, constrained_layout=True)
+    fig1.suptitle('Vehicle steering in closed loop (error frame)')
+    axs1[0].plot(x, e1)
+    axs1[0].set_ylabel('$e_y$ [m]')
+    axs1[1].plot(x, np.rad2deg(e2))
+    axs1[1].set_ylabel(r'$e_\psi$ [deg]')
+    axs1[2].plot(x, X[1,:])
+    axs1[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
+    axs1[3].plot(x, np.rad2deg(X[3,:]))
+    axs1[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
+    axs1[4].plot(x[:-1], delta_sw)
+    axs1[4].axhline( steer_max, color="r", linestyle='--')
+    axs1[4].axhline(-steer_max, color="r", linestyle='--')
+    axs1[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
+    axs1[4].set_xlabel('$k$')
+    fig1.align_ylabels()
 
     # # results in the inertial frame
     # _, y_ref, psi_ref = get_double_lane_change_data(x)
@@ -332,33 +337,55 @@ if __name__ == "__main__":
     # axs[1].set_ylabel("$s_2$")
     # axs[2].set_ylabel("$a$")
 
-    _, axs = plt.subplots(3, 1, constrained_layout=True)
-    axs[0].plot(agent.policy_performances)
-    axs[1].semilogy(np.linalg.norm(agent.policy_gradients, axis=1))
-    axs[2].semilogy(R, "o", markersize=1)
-    axs[0].set_ylabel(r"$J(\pi_\theta)$")
-    axs[1].set_ylabel(r"$||\nabla_\theta J(\pi_\theta)||$")
-    axs[2].set_ylabel("$L$")
+    fig2, axs2 = plt.subplots(3, 1, constrained_layout=True)
+    fig2.suptitle('Performance and policy gradient')
+    axs2[0].plot(agent.policy_performances)
+    axs2[1].semilogy(np.linalg.norm(agent.policy_gradients, axis=1))
+    axs2[2].semilogy(R, "o", markersize=1)
+    axs2[0].set_ylabel(r"$J(\pi_\theta)$")
+    axs2[1].set_ylabel(r"$||\nabla_\theta J(\pi_\theta)||$")
+    axs2[2].set_ylabel("$L$")
+    fig2.align_ylabels()
 
-    _, axs = plt.subplots(3, 2, constrained_layout=True, sharex=True)
-    axs[0, 0].plot(np.asarray(agent.updates_history["b"]))
-    axs[0, 1].plot(
+    fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
+    fig3.suptitle('Parameter values')
+    axs3[0, 0].plot(np.asarray(agent.updates_history["b"]))
+    axs3[0, 1].plot(
         np.stack(
             [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
         ),
     )
-    axs[1, 0].plot(np.asarray(agent.updates_history["f"]))
-    axs[1, 1].plot(np.asarray(agent.updates_history["V0"]))
-    axs[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
-    axs[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
-    axs[0, 0].set_ylabel("$b$")
-    axs[0, 1].set_ylabel("$x$ backoff")
-    axs[1, 0].set_ylabel("$f$")
-    axs[1, 1].set_ylabel("$V_0$")
-    axs[2, 0].set_ylabel("$A$")
-    axs[2, 1].set_ylabel("$B$")
+    axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
+    axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
+    axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
+    axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
+    axs3[0, 0].set_ylabel("$b$")
+    axs3[0, 1].set_ylabel("$x$ backoff")
+    axs3[1, 0].set_ylabel("$f$")
+    axs3[1, 1].set_ylabel("$V_0$")
+    axs3[2, 0].set_ylabel("$A$")
+    axs3[2, 1].set_ylabel("$B$")
+    fig3.align_ylabels()
 
     plt.show(block=False)
-    print("Press ENTER to close the plot")
-    input()
+
+    user_input = input("Do you want to save the figures? (y/[n]): ").strip().lower()
+
+    if user_input == "y":
+        import datetime
+        import os
+
+        # Create timestamped folder
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        folder_path = f"figures_{timestamp}"
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Save the figures
+        fig1.savefig(os.path.join(folder_path, "trajectory.pdf"))
+        fig2.savefig(os.path.join(folder_path, "performance.pdf"))
+        fig3.savefig(os.path.join(folder_path, "parameters.pdf"))
+
+        print(f"Figures saved in folder: {folder_path}")
+    else:
+        print("Figures not saved.")
     plt.close()
