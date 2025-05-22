@@ -93,12 +93,12 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     ) -> tuple[npt.NDArray[np.floating], float, bool, bool, dict[str, Any]]:
         """Steps the LTI system."""
         action = np.asarray(action).item()
-        disturbance = self.np_random.uniform(*self.e_bnd)  # road curvature
-        x_new = self.A @ self.x + self.B @ np.array([[action], [disturbance]])
+        disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
+        x_new = self.A @ self.x + self.B @ np.asarray([[action], [disturbance]])
 
         # add road bank effect (constant disturbance)
         road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
-        x_new += np.array([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
+        x_new += np.asarray([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
         self.x = x_new
         r = self.get_stage_cost(self.x, action)
@@ -128,7 +128,7 @@ class LinearMpc(Mpc[cs.SX]):
         "f": np.zeros(LtiSystem.nx + LtiSystem.nu),  # affine term in the cost
         "A": A_init,
         "B": B_init[:,0,np.newaxis],  # just the steering input
-        # "k": np.array([1.0]),  # test learning of individual parameters
+        # "k": np.asarray([1.0]),  # test learning of individual parameters
     }
 
     def __init__(self) -> None:
