@@ -128,4 +128,9 @@ def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
     return x_lb, x_ub, a_lb, a_ub, e_lb, e_ub
 
 
+def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
+    Q = np.diag([1, 1e-3, 1, 1e-3])
+    R = np.diag([1])
+    return Q, R
+
 

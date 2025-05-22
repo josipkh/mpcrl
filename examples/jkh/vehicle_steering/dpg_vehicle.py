@@ -31,7 +31,7 @@ from mpcrl.util.control import dlqr
 from mpcrl.wrappers.agents import Log, RecordUpdates
 from mpcrl.wrappers.envs import MonitorEpisodes
 
-from vehicle_model import VehicleParams, get_discrete_system, get_bounds
+from vehicle_model import VehicleParams, get_discrete_system, get_bounds, get_cost_matrices
 
 # %%
 # Defining the environment
@@ -54,6 +54,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     a_bnd = (a_lb, a_ub)  # bounds of control input
     w = np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
+    Q, R = get_cost_matrices()  # quadratic cost matrices
 
     # extremely recommended to bound the action space with additive exploration so that
     # we can clip the action before applying it to the system
@@ -74,10 +75,9 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         """Computes the stage cost :math:`L(s,a)`."""
         lb, ub = self.x_bnd
         return (
-            0.5
-            * (
-                np.square(state).sum()
-                + 0.5 * action**2
+            (
+                state.T @ self.Q @ state
+                + self.R * action**2
                 + self.w.T @ np.maximum(0, lb - state)
                 + self.w.T @ np.maximum(0, state - ub)
             ).item()
@@ -113,6 +113,7 @@ class LinearMpc(Mpc[cs.SX]):
 
     horizon = 10
     discount_factor = 0.9
+    vehicle_params = VehicleParams()
     A_init, B_init = get_discrete_system()
     learnable_pars_init = {
         "V0": np.zeros(LtiSystem.nx),  # cost modification, V0*x0
@@ -155,18 +156,17 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("x_ub", x[:, 1:], "<=", x_bnd[1] + x_ub + s)
 
         # objective
+        Q, R = get_cost_matrices()
         A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]
-        S = cs.DM(dlqr(A_init, B_init, 0.5 * np.eye(nx), 0.25 * np.eye(nu))[1])
+        S = cs.DM(dlqr(A_init, B_init, Q, R)[1])  # terminal cost matrix
         gammapowers = cs.DM(gamma ** np.arange(N)).T
-        self.minimize(
-            V0.T @ x[:, 0]  # to have a derivative, V0 must be a function of the state
-            + cs.bilin(S, x[:, -1])
-            + cs.sum2(f.T @ cs.vertcat(x[:, :-1], u))
-            + 0.5
-            * cs.sum2(
-                gammapowers * (cs.sum1(x[:, :-1] ** 2) + 0.5 * cs.sum1(u**2) + w.T @ s)
-            )
-        )
+        objective = 0.0
+        for k in range(N):
+            objective += gammapowers[k] * (cs.bilin(Q, x[:, k]) + R * u[k]**2 + w.T @ s[:, k])  # quadratic stage cost
+            objective += gammapowers[k] * (f.T @ cs.vertcat(x[:, k], u[k]))  # linear stage cost
+        objective += gamma**N * cs.bilin(S, x[:, -1])  # terminal cost
+        objective += V0.T @ x[:, 0]  # cost modification; to have a derivative, V0 must be a function of the state
+        self.minimize(objective)
 
         # solver
         solver = "QP"  # "NLP" or "QP"
