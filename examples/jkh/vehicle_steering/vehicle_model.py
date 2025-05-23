@@ -108,15 +108,26 @@ def get_continuous_system(vehicle_params: dict[str, float | ca.SX] | None = Vehi
     return A_cont, B_cont
 
 
-def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams(), dt: float = 0.05) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams(), dt: float = 0.05, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
     A_cont, B_cont = get_continuous_system(vehicle_params=vehicle_params)
-    if contains_symbolics(A_cont) or contains_symbolics(B_cont):
-        sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
-    else:
+    if method == "dimensionless":
+        Mx, Mu, Mt = get_nondim_matrices(vehicle_params=vehicle_params)
+        Mx_inv = np.linalg.inv(Mx)
+        A_cont = Mt * Mx_inv @ A_cont @ Mx
+        B_cont = Mt * Mx_inv @ B_cont * Mu
+        dt = (np.linalg.inv(Mt) * dt).item()
         sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
+    elif method == "bilinear":
+        if contains_symbolics(A_cont) or contains_symbolics(B_cont):
+            sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
+        else:
+            sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
+    else:
+        raise ValueError(f"Method {method} not supported. Use 'bilinear' or 'dimensionless'.")
     A_disc = sysd[0]
     B_disc = sysd[1]
     return A_disc, B_disc
+
 
 def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[float | ca.SX]:
     """Get state and action bounds for the specific vehicle."""
@@ -138,14 +149,15 @@ def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
     R = np.diag([1])
     return Q, R
 
+
 def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[np.ndarray]:
     """Returns the matrices for transforming the system to a non-dimensional form."""
     vx = vehicle_params.vx
     L = vehicle_params.lf + vehicle_params.lr
 
-    Mx = np.diag([L, vx, 1, vx/L])  # state is [ey, ey_dot, epsi, epsi_dot]
-    Mu = np.diag([1])  # input is an angle, no transformation needed
-    Mt = L/vx  # time transformation
+    Mx = np.diag([L, vx, 1.0, vx/L])  # state is [ey, ey_dot, epsi, epsi_dot]
+    Mu = np.diag([1.0])  # input is an angle, no transformation needed
+    Mt = np.diag([L/vx])  # time transformation
     return Mx, Mu, Mt 
 
 

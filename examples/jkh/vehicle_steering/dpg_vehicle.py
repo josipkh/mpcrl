@@ -38,7 +38,7 @@ from mpcrl.wrappers.envs import MonitorEpisodes
 
 from vehicle_model import VehicleParams, get_discrete_system, get_bounds, get_cost_matrices, get_nondim_matrices
 
-dimensionless = False  # set to True to use the dimensionless approach
+dimensionless = True  # set to True to use the dimensionless approach
 if dimensionless:
     Mx, Mu, Mt = get_nondim_matrices()  # x(physical) = Mx * x(dimensionless)
     Mx_inv = np.linalg.inv(Mx)
@@ -68,6 +68,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
     Q, R = get_cost_matrices()  # quadratic cost matrices
 
+    # TODO: should the reward be scaled or not?
     if dimensionless:
         Q = Mx.T @ Q @ Mx
         R = Mu.T @ R @ Mu
@@ -111,7 +112,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         action = np.asarray(action).item()
 
         if dimensionless:
-            action = Mu @ action  # transform to dimensional action
+            action = (Mu * action).item()  # transform to dimensional action
 
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
         x_new = self.A @ self.x + self.B @ np.asarray([[action], [disturbance]])
@@ -123,7 +124,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         self.x = x_new  # keep this physical
         if dimensionless:
             x_new = Mx_inv @ x_new  # transform to dimensionless state
-            action = Mu_inv @ action  # transform back to dimensionless action
+            action = (Mu_inv * action).item()  # transform back to dimensionless action
 
         r = self.get_stage_cost(x_new, action)  # use the dimensionless state for the reward
 
@@ -144,11 +145,12 @@ class LinearMpc(Mpc[cs.SX]):
     horizon = 10
     discount_factor = 0.9
     vehicle_params = VehicleParams()
-    A_init, B_init = get_discrete_system()
+    dt = 0.05  # [s] sampling time
 
     if dimensionless:
-        A_init = Mt @ Mx_inv @ A_init @ Mx
-        B_init = Mt @ Mx_inv @ B_init @ Mu
+        A_init, B_init = get_discrete_system(dt=dt, method="dimensionless")
+    else:
+        A_init, B_init = get_discrete_system(dt=dt, method="bilinear")
 
     learnable_pars_init = {
         "V0": np.zeros(LtiSystem.nx),  # cost modification, V0*x0
@@ -195,6 +197,10 @@ class LinearMpc(Mpc[cs.SX]):
 
         # objective
         Q, R = get_cost_matrices()
+        if dimensionless:
+            Q = Mx.T @ Q @ Mx
+            R = Mu.T @ R @ Mu
+            w = Mx @ w
         A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]  # LtiSystem.B[:, 0, np.newaxis]
         S = cs.DM(dlqr(A_init, B_init, Q, R)[1])  # terminal cost matrix
         gammapowers = cs.DM(gamma ** np.arange(N)).T
@@ -228,7 +234,7 @@ class LinearMpc(Mpc[cs.SX]):
 
             self.init_solver(opts, solver="fatrop", type="nlp")
         elif solver == "QP":
-            opts = {"osqp": {"verbose":False}}
+            opts = {"osqp": {"verbose":False}, "error_on_fail": False}
             self.init_solver(opts, solver="osqp", type="conic")
 
 
@@ -304,7 +310,12 @@ if __name__ == "__main__":
     X = env.get_wrapper_attr("observations")[0].squeeze().T
     U = env.get_wrapper_attr("actions")[0].squeeze()
     R = env.get_wrapper_attr("rewards")[0]
-    
+
+    if dimensionless:
+        X = Mx @ X
+        U = (Mu * U).ravel()
+        # TODO: R = ?
+
     vehicle_params = VehicleParams()
     isw = vehicle_params.isw
 
