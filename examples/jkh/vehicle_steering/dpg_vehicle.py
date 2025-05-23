@@ -36,7 +36,14 @@ from mpcrl.util.control import dlqr
 from mpcrl.wrappers.agents import Log, RecordUpdates
 from mpcrl.wrappers.envs import MonitorEpisodes
 
-from vehicle_model import VehicleParams, get_discrete_system, get_bounds, get_cost_matrices
+from vehicle_model import VehicleParams, get_discrete_system, get_bounds, get_cost_matrices, get_nondim_matrices
+
+dimensionless = False  # set to True to use the dimensionless approach
+if dimensionless:
+    Mx, Mu, Mt = get_nondim_matrices()  # x(physical) = Mx * x(dimensionless)
+    Mx_inv = np.linalg.inv(Mx)
+    Mu_inv = np.linalg.inv(Mu)
+    Mt_inv = np.linalg.inv(Mt)
 
 # %%
 # Defining the environment
@@ -61,6 +68,11 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
     Q, R = get_cost_matrices()  # quadratic cost matrices
 
+    if dimensionless:
+        Q = Mx.T @ Q @ Mx
+        R = Mu.T @ R @ Mu
+        w = Mx @ w
+
     # extremely recommended to bound the action space with additive exploration so that
     # we can clip the action before applying it to the system
     action_space = Box(*a_bnd, (nu,), np.float64)
@@ -79,6 +91,10 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
         """Computes the stage cost :math:`L(s,a)`."""
         lb, ub = self.x_bnd
+
+        if dimensionless:
+            lb, ub = Mx_inv @ lb, Mx_inv @ ub
+
         return (
             (
                 state.T @ self.Q @ state
@@ -93,6 +109,10 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     ) -> tuple[npt.NDArray[np.floating], float, bool, bool, dict[str, Any]]:
         """Steps the LTI system."""
         action = np.asarray(action).item()
+
+        if dimensionless:
+            action = Mu @ action  # transform to dimensional action
+
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
         x_new = self.A @ self.x + self.B @ np.asarray([[action], [disturbance]])
 
@@ -100,8 +120,13 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
         x_new += np.asarray([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
-        self.x = x_new
-        r = self.get_stage_cost(self.x, action)
+        self.x = x_new  # keep this physical
+        if dimensionless:
+            x_new = Mx_inv @ x_new  # transform to dimensionless state
+            action = Mu_inv @ action  # transform back to dimensionless action
+
+        r = self.get_stage_cost(x_new, action)  # use the dimensionless state for the reward
+
         return x_new, r, False, False, {}
 
 
@@ -120,6 +145,11 @@ class LinearMpc(Mpc[cs.SX]):
     discount_factor = 0.9
     vehicle_params = VehicleParams()
     A_init, B_init = get_discrete_system()
+
+    if dimensionless:
+        A_init = Mt @ Mx_inv @ A_init @ Mx
+        B_init = Mt @ Mx_inv @ B_init @ Mu
+
     learnable_pars_init = {
         "V0": np.zeros(LtiSystem.nx),  # cost modification, V0*x0
         "x_lb": np.zeros(LtiSystem.nx),  # constraint backoff
@@ -377,7 +407,9 @@ if __name__ == "__main__":
 
         # Create timestamped folder
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        folder_path = f"figures_{timestamp}"
+        main_folder_path = "/home/josip/mpcrl/examples/jkh/vehicle_steering"
+        new_folder_path = f"figures_{timestamp}"
+        folder_path = os.path.join(main_folder_path, new_folder_path)
         os.makedirs(folder_path, exist_ok=True)
 
         # Save the figures
