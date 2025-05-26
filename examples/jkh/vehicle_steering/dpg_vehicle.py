@@ -195,6 +195,11 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("x_lb", x_bnd[0] + x_lb - s, "<=", x[:, 1:])
         self.constraint("x_ub", x[:, 1:], "<=", x_bnd[1] + x_ub + s)
 
+        du = u[:, 1:] - u[:, 0:-1]
+        du_ub = LtiSystem.a_bnd[1] * self.dt  # rate limit, 0 to max in 1 second
+        self.constraint("du_lb", du, ">=", -du_ub)
+        self.constraint("du_ub", du, "<=",  du_ub)
+
         # objective
         Q, R = get_cost_matrices()
         if dimensionless:
