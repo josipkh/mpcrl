@@ -36,7 +36,14 @@ from mpcrl.util.control import dlqr
 from mpcrl.wrappers.agents import Log, RecordUpdates
 from mpcrl.wrappers.envs import MonitorEpisodes
 
-from vehicle_model import VehicleParams, get_discrete_system, get_bounds, get_cost_matrices, get_nondim_matrices
+from vehicle_model import (
+    VehicleParams,
+    get_discrete_system,
+    get_bounds,
+    get_cost_matrices,
+    get_nondim_matrices,
+    vehicle_size
+)
 
 dimensionless = True  # set to True to use the dimensionless approach
 if dimensionless:
@@ -58,17 +65,16 @@ if dimensionless:
 class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     """A simple discrete-time LTI system affected by uniform noise."""
 
-    nx = 4  # number of states
-    nu = 1  # number of inputs
+    ns = 4  # number of states
+    na = 1  # number of actions
     A, B = get_discrete_system()  # dynamics matrices
-    x_lb, x_ub, a_lb, a_ub, e_lb, e_ub = get_bounds()  # bounds of state, action and disturbance
-    x_bnd = (x_lb, x_ub)  # bounds of state
+    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds()  # bounds of state, action and disturbance
+    s_bnd = (s_lb, s_ub)  # bounds of state
     a_bnd = (a_lb, a_ub)  # bounds of control input
-    w = np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
-    Q, R = get_cost_matrices()  # quadratic cost matrices
+    Q, R, w = get_cost_matrices()  # quadratic cost matrices
 
-    # TODO: should the reward be scaled or not?
+    # make the reward dimensionless if needed
     if dimensionless:
         Q = Mx.T @ Q @ Mx
         R = Mu.T @ R @ Mu
@@ -76,7 +82,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
     # extremely recommended to bound the action space with additive exploration so that
     # we can clip the action before applying it to the system
-    action_space = Box(*a_bnd, (nu,), np.float64)
+    action_space = Box(*a_bnd, (na,), np.float64)
 
     def reset(
         self,
@@ -86,12 +92,12 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     ) -> tuple[npt.NDArray[np.floating], dict[str, Any]]:
         """Resets the state of the LTI system."""
         super().reset(seed=seed, options=options)
-        self.x = np.asarray([0.0, 0.0, 0.0, 0.0]).reshape(self.nx, 1)
-        return self.x, {}
+        self.s = np.asarray([0.0, 0.0, 0.0, 0.0]).reshape(self.ns, 1)
+        return self.s, {}
 
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
         """Computes the stage cost :math:`L(s,a)`."""
-        lb, ub = self.x_bnd
+        lb, ub = self.s_bnd
 
         if dimensionless:
             lb, ub = Mx_inv @ lb, Mx_inv @ ub
@@ -115,20 +121,21 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
             action = (Mu * action).item()  # transform to dimensional action
 
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
-        x_new = self.A @ self.x + self.B @ np.asarray([[action], [disturbance]])
+        s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
         # add road bank effect (constant disturbance)
         road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
-        x_new += np.asarray([[0.0], [9.81], [0.0], [0.0]]) * np.sin(road_bank_angle)
+        g = 9.81 if vehicle_size == "large" else 0.9418  # TODO: remove the hack with gravity scaling
+        s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
-        self.x = x_new  # keep this physical
+        self.s = s_new  # keep this physical
         if dimensionless:
-            x_new = Mx_inv @ x_new  # transform to dimensionless state
+            s_new = Mx_inv @ s_new  # transform to dimensionless state
             action = (Mu_inv * action).item()  # transform back to dimensionless action
 
-        r = self.get_stage_cost(x_new, action)  # use the dimensionless state for the reward
+        r = self.get_stage_cost(s_new, action)  # use the dimensionless state for the reward
 
-        return x_new, r, False, False, {}
+        return s_new, r, False, False, {}
 
 
 # %%
@@ -146,6 +153,7 @@ class LinearMpc(Mpc[cs.SX]):
     discount_factor = 0.9
     vehicle_params = VehicleParams()
     dt = 0.05  # [s] sampling time
+    nx, nu = LtiSystem.ns, LtiSystem.na  # number of states and actions
 
     if dimensionless:
         A_init, B_init = get_discrete_system(dt=dt, method="dimensionless")
@@ -153,11 +161,11 @@ class LinearMpc(Mpc[cs.SX]):
         A_init, B_init = get_discrete_system(dt=dt, method="bilinear")
 
     learnable_pars_init = {
-        "V0": np.zeros(LtiSystem.nx),  # cost modification, V0*x0
-        "x_lb": np.zeros(LtiSystem.nx),  # constraint backoff
-        "x_ub": np.zeros(LtiSystem.nx),  # constraint backoff
-        "b": np.zeros(LtiSystem.nx),  # affine term in the dynamics
-        "f": np.zeros(LtiSystem.nx + LtiSystem.nu),  # affine term in the cost
+        "V0": np.zeros(nx),  # cost modification, V0*x0
+        "x_lb": np.zeros(nx),  # constraint backoff
+        "x_ub": np.zeros(nx),  # constraint backoff
+        "b": np.zeros(nx),  # affine term in the dynamics
+        "f": np.zeros(nx + nu),  # affine term in the cost
         "A": A_init,
         "B": B_init[:,0,np.newaxis],  # just the steering input
         # "k": np.asarray([1.0]),  # test learning of individual parameters
@@ -166,9 +174,8 @@ class LinearMpc(Mpc[cs.SX]):
     def __init__(self) -> None:
         N = self.horizon
         gamma = self.discount_factor
-        w = LtiSystem.w
-        nx, nu = LtiSystem.nx, LtiSystem.nu
-        x_bnd, a_bnd = LtiSystem.x_bnd, LtiSystem.a_bnd
+        nx, nu = LtiSystem.ns, LtiSystem.na
+        x_bnd, u_bnd = LtiSystem.s_bnd, LtiSystem.a_bnd
         nlp = Nlp[cs.SX]()
         super().__init__(nlp, N)
 
@@ -185,7 +192,7 @@ class LinearMpc(Mpc[cs.SX]):
 
         # variables (state, action, slack)
         x, _ = self.state("x", nx, bound_initial=False)
-        u, _ = self.action("u", nu, lb=a_bnd[0], ub=a_bnd[1])
+        u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
 
         # dynamics
@@ -195,13 +202,13 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("x_lb", x_bnd[0] + x_lb - s, "<=", x[:, 1:])
         self.constraint("x_ub", x[:, 1:], "<=", x_bnd[1] + x_ub + s)
 
-        du = u[:, 1:] - u[:, 0:-1]
-        du_ub = LtiSystem.a_bnd[1] * self.dt  # rate limit, 0 to max in 1 second
-        self.constraint("du_lb", du, ">=", -du_ub)
-        self.constraint("du_ub", du, "<=",  du_ub)
+        # du = u[:, 1:] - u[:, 0:-1]
+        # du_ub = LtiSystem.u_bnd[1] * self.dt  # rate limit, 0 to max in 1 second
+        # self.constraint("du_lb", du, ">=", -du_ub)
+        # self.constraint("du_ub", du, "<=",  du_ub)
 
         # objective
-        Q, R = get_cost_matrices()
+        Q, R, w = get_cost_matrices()
         if dimensionless:
             Q = Mx.T @ Q @ Mx
             R = Mu.T @ R @ Mu
@@ -230,16 +237,16 @@ class LinearMpc(Mpc[cs.SX]):
             # additional options from the fatrop demo
             # opts["structure_detection"] = "auto",
             # opts["debug"] = True
-            # opts["equality"] = [True for _ in range(N * x.numel())]
+            # opts["equality"] = [True for _ in range(N * x.numel())]  # TODO: add False for inequalities
 
-            # (codegen of helper functions)
+            # codegen of helper functions
             # opts["jit"] = True
             # opts["jit_temp_suffix"] = False
             # opts["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
 
             self.init_solver(opts, solver="fatrop", type="nlp")
         elif solver == "QP":
-            opts = {"osqp": {"verbose":False}, "error_on_fail": False}
+            opts = {"osqp": {"verbose": False}, "error_on_fail": False}
             self.init_solver(opts, solver="osqp", type="conic")
 
 
@@ -272,7 +279,7 @@ if __name__ == "__main__":
     # instantiate the env and wrap it - since we will train for only one long episode,
     # tell the DPG agent to perform its LSTD computations over subtrajectories of length
     # 100.
-    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=10_000))
+    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=3_000))
     rollout_length = 100
 
     # now build the MPC and the dict of learnable parameters
@@ -319,9 +326,9 @@ if __name__ == "__main__":
     if dimensionless:
         X = Mx @ X
         U = (Mu * U).ravel()
-        # TODO: R = ?
+        # TODO: reward scaling back?
 
-    vehicle_params = VehicleParams()
+    vehicle_params = LinearMpc.vehicle_params
     isw = vehicle_params.isw
 
     e1 = X[0,:]
@@ -329,9 +336,11 @@ if __name__ == "__main__":
     delta_sw = isw * np.rad2deg(U)
     x = range(len(e1))
     steer_max = np.rad2deg(vehicle_params.sw_max)
+    dsteer_max = steer_max  # max. steering rate in deg/s
+    ddelta_sw = 1/LinearMpc.dt * np.diff(delta_sw, prepend=0)  # steering rate in deg/s
 
     # results in the error frame
-    fig1, axs1 = plt.subplots(5, sharex=True, constrained_layout=True)
+    fig1, axs1 = plt.subplots(6, sharex=True, constrained_layout=True)
     fig1.suptitle('Vehicle steering in closed loop (error frame)')
     axs1[0].plot(x, e1)
     axs1[0].set_ylabel('$e_y$ [m]')
@@ -345,7 +354,11 @@ if __name__ == "__main__":
     axs1[4].axhline( steer_max, color="r", linestyle='--')
     axs1[4].axhline(-steer_max, color="r", linestyle='--')
     axs1[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
-    axs1[4].set_xlabel('$k$')
+    axs1[5].plot(x[:-1], ddelta_sw)
+    axs1[5].axhline( dsteer_max, color="r", linestyle='--')
+    axs1[5].axhline(-dsteer_max, color="r", linestyle='--')
+    axs1[5].set_ylabel(r'$\dot{\delta}_\mathrm{sw}$ [deg/s]')
+    axs1[5].set_xlabel('$k$')
     fig1.align_ylabels()
 
     # # results in the inertial frame

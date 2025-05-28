@@ -9,21 +9,70 @@ The reference yaw rate is modelled as an additional control input (will be fixed
 import numpy as np
 import casadi as ca
 from scipy.signal import cont2discrete
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from utils import contains_symbolics, cont2discrete_symbolic
 
+vehicle_size = "large"  # "large" or "small" vehicle size, affects the parameters
+
+vehicle_configs = {
+    "large": {
+        "cf": 63271.7,  # [N/rad]   front cornering stiffness (for one tire)
+        "cr": 63271.7,  # [N/rad]   rear cornering stiffness (for one tire)
+        "m": 1600.0,    # [kg]      vehicle mass
+        "vx": 15.6,     # [m/s]     longitudinal vehicle speed
+        "lf": 1.1578,   # [m]       distance from the center of gravity to the front axle
+        "lr": 1.4642,   # [m]       distance from the center of gravity to the rear axle
+        "iz": 2675.7,   # [kg*m^2]  vehicle moment of inertia
+        "isw": 13,      # [-]       steering ratio
+        "sw_max": float(np.deg2rad(90))  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+    },
+    "small": {
+        "cf": 8.25,     # [N/rad]   front cornering stiffness (for one tire)
+        "cr": 8.25,     # [N/rad]   rear cornering stiffness (for one tire)
+        "m": 2.173,     # [kg]      vehicle mass
+        "vx": 1.5,      # [m/s]     longitudinal vehicle speed
+        "lf": 0.1115,   # [m]       distance from the center of gravity to the front axle
+        "lr": 0.141,    # [m]       distance from the center of gravity to the rear axle
+        "iz": 0.0337,   # [kg*m^2]  vehicle moment of inertia
+        "isw": 13,      # [-]       steering ratio
+        "sw_max": float(np.deg2rad(90))  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+    }
+}
 
 @dataclass(kw_only=True)
 class VehicleParams:
-    cf:     float | ca.SX = 63271.7                 # [N/rad]   front cornering stiffness (for one tire)
-    cr:     float | ca.SX = 63271.7                 # [N/rad]   rear cornering stiffness (for one tire)
-    m:      float | ca.SX = 1600.0                  # [kg]      vehicle mass
-    vx:     float | ca.SX = 15.6                    # [m/s]     longitudinal vehicle speed
-    lf:     float | ca.SX = 1.1578                  # [m]       distance from the center of gravity to the front axle
-    lr:     float | ca.SX = 1.4642                  # [m]       distance from the center of gravity to the rear axle
-    iz:     float | ca.SX = 2675.7                  # [kg*m^2]  vehicle moment of inertia
-    isw:    float | ca.SX = 13                      # [-]       steering ratio
-    sw_max: float | ca.SX = float(np.deg2rad(90))   # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+    cf: float = field(default=None)
+    cr: float = field(default=None)
+    m: float = field(default=None)
+    vx: float = field(default=None)
+    lf: float = field(default=None)
+    lr: float = field(default=None)
+    iz: float = field(default=None)
+    isw: float = field(default=None)
+    sw_max: float = field(default=None)
+    
+    def __post_init__(self):
+        if self.cf is None:
+            config = vehicle_configs[vehicle_size]
+            self.cf = config['cf']
+            self.cr = config['cr']
+            self.m = config['m']
+            self.vx = config['vx']
+            self.lf = config['lf']
+            self.lr = config['lr']
+            self.iz = config['iz']
+            self.isw = config['isw']
+            self.sw_max = config['sw_max']
+            
+    # cf:     float | ca.SX = 63271.7                 # [N/rad]   front cornering stiffness (for one tire)
+    # cr:     float | ca.SX = 63271.7                 # [N/rad]   rear cornering stiffness (for one tire)
+    # m:      float | ca.SX = 1600.0                  # [kg]      vehicle mass
+    # vx:     float | ca.SX = 15.6                    # [m/s]     longitudinal vehicle speed
+    # lf:     float | ca.SX = 1.1578                  # [m]       distance from the center of gravity to the front axle
+    # lr:     float | ca.SX = 1.4642                  # [m]       distance from the center of gravity to the rear axle
+    # iz:     float | ca.SX = 2675.7                  # [kg*m^2]  vehicle moment of inertia
+    # isw:    float | ca.SX = 13                      # [-]       steering ratio
+    # sw_max: float | ca.SX = float(np.deg2rad(90))   # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
 
 
 def get_A_cont(
@@ -116,7 +165,7 @@ def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = Vehicl
         A_cont = Mt * Mx_inv @ A_cont @ Mx
         B_cont = Mt * Mx_inv @ B_cont * Mu
         dt = (np.linalg.inv(Mt) * dt).item()
-        sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
+        sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="zoh")
     elif method == "bilinear":
         if contains_symbolics(A_cont) or contains_symbolics(B_cont):
             sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
@@ -131,8 +180,13 @@ def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = Vehicl
 
 def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[float | ca.SX]:
     """Get state and action bounds for the specific vehicle."""
-    x_lb = np.asarray([[-2], [-10], [-45*np.pi/180], [-100]])
-    x_ub = np.asarray([[-lb[0]] for lb in x_lb])
+    ey_ub = (vehicle_params.lf + vehicle_params.lr) / 2
+    dey_ub = 0.5 * vehicle_params.vx
+    epsi_ub = np.deg2rad(45)
+    depsi_ub = 100 * vehicle_params.vx / (vehicle_params.lf + vehicle_params.lr)  # pretty large
+
+    s_ub = np.asarray([[ey_ub], [dey_ub], [epsi_ub], [depsi_ub]])
+    s_lb = np.asarray([[-ub[0]] for ub in s_ub])
 
     a_ub = vehicle_params.sw_max / vehicle_params.isw
     a_lb = -a_ub
@@ -140,14 +194,22 @@ def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
     e_ub = 0.03 * vehicle_params.vx  # max. curvature for DLC * vehicle speed
     e_lb = -e_ub
 
-    return x_lb, x_ub, a_lb, a_ub, e_lb, e_ub
+    return s_lb, s_ub, a_lb, a_ub, e_lb, e_ub
 
 
 def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
     """Returns the quadratic cost matrices for the controller (x'Qx + u'Ru)."""
-    Q = np.diag([1, 1e-3, 1, 1e-3])
-    R = np.diag([1])
-    return Q, R
+    if vehicle_size == "large":
+        Q = np.diag([1, 1e-3, 1, 1e-3])
+        R = np.diag([1])
+        w = np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
+    elif vehicle_size == "small":
+        Q = np.diag([107.83, 0.10816, 1, 1e-3])  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
+        R = np.diag([1])
+        w = np.asarray([[1038.416], [1040], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
+    else:
+        raise ValueError(f"MPC weights for size {vehicle_size} not specified. Use 'large' or 'small'.")
+    return Q, R, w
 
 
 def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[np.ndarray]:
@@ -159,5 +221,3 @@ def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX] | None = Vehicl
     Mu = np.diag([1.0])  # input is an angle, no transformation needed
     Mt = np.diag([L/vx])  # time transformation
     return Mx, Mu, Mt 
-
-
