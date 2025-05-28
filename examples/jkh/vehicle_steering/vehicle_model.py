@@ -39,6 +39,7 @@ vehicle_configs = {
     }
 }
 
+
 @dataclass(kw_only=True)
 class VehicleParams:
     cf: float = field(default=None)
@@ -50,7 +51,7 @@ class VehicleParams:
     iz: float = field(default=None)
     isw: float = field(default=None)
     sw_max: float = field(default=None)
-    
+
     def __post_init__(self):
         if self.cf is None:
             config = vehicle_configs[vehicle_size]

@@ -145,7 +145,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 # inherits from :class:`csnlp.wrappers.Mpc`. The implementation is as follows, and it is
 # in line with the theory presented above.
 
-
+# MPC formulation similar to Sec. VII.A in https://ieeexplore.ieee.org/document/8701462
 class LinearMpc(Mpc[cs.SX]):
     """A simple linear MPC controller."""
 
@@ -160,16 +160,21 @@ class LinearMpc(Mpc[cs.SX]):
     else:
         A_init, B_init = get_discrete_system(dt=dt, method="bilinear")
 
-    learnable_pars_init = {
-        "V0": np.zeros(nx),  # cost modification, V0*x0
-        "x_lb": np.zeros(nx),  # constraint backoff
-        "x_ub": np.zeros(nx),  # constraint backoff
-        "b": np.zeros(nx),  # affine term in the dynamics
-        "f": np.zeros(nx + nu),  # affine term in the cost
-        "A": A_init,
-        "B": B_init[:,0,np.newaxis],  # just the steering input
-        # "k": np.asarray([1.0]),  # test learning of individual parameters
-    }
+    use_learned_parameters = True  # to test the learned (dimensionless) policy transfer
+    if use_learned_parameters:
+        c = np.load('/home/josip/mpcrl/examples/jkh/vehicle_steering/output_2025-05-28_16-28-06-small-learned/learned_parameters.npz')
+        learnable_pars_init = {key: value for key, value in c.items()}
+    else:
+        learnable_pars_init = {
+            "V0": np.zeros(nx),  # cost modification, V0*x0
+            "x_lb": np.zeros(nx),  # constraint backoff
+            "x_ub": np.zeros(nx),  # constraint backoff
+            "b": np.zeros(nx),  # affine term in the dynamics
+            "f": np.zeros(nx + nu),  # affine term in the cost
+            "A": A_init,
+            "B": B_init[:,0,np.newaxis],  # just the steering input
+            # "k": np.asarray([1.0]),  # test learning of individual parameters
+        }
 
     def __init__(self) -> None:
         N = self.horizon
@@ -315,7 +320,8 @@ if __name__ == "__main__":
     agent.train(env=env, episodes=1, seed=69)
 
     # %%
-    # plot the results
+    # Display the results
+    # ----------------
     import matplotlib.pyplot as plt
     plt.rcParams['axes.xmargin'] = 0  # tight x range
 
@@ -428,25 +434,33 @@ if __name__ == "__main__":
 
     plt.show(block=False)
 
-    user_input = input("Do you want to save the figures? (y/[n]): ").strip().lower()
+    user_input = input("Do you want to save the output? (y/[n]): ").strip().lower()
 
     if user_input == "y":
         import datetime
         import os
 
-        # Create timestamped folder
+        # create a timestamped folder
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         main_folder_path = "/home/josip/mpcrl/examples/jkh/vehicle_steering"
-        new_folder_path = f"figures_{timestamp}"
+        new_folder_path = f"output_{timestamp}"
         folder_path = os.path.join(main_folder_path, new_folder_path)
         os.makedirs(folder_path, exist_ok=True)
 
-        # Save the figures
+        # save the figures
         fig1.savefig(os.path.join(folder_path, "trajectory.pdf"))
         fig2.savefig(os.path.join(folder_path, "performance.pdf"))
         fig3.savefig(os.path.join(folder_path, "parameters.pdf"))
 
-        print(f"Figures saved in folder: {folder_path}")
+        # save the final (learned) parameters
+        np.savez(
+            os.path.join(folder_path, "learned_parameters.npz"),
+            **{name: val[-1] for name, val in agent.updates_history.items()}
+        )
+
+        print(f"Output saved in folder: {folder_path}")
     else:
-        print("Figures not saved.")
+        print("Output not saved.")
     plt.close()
+
+# %%
