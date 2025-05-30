@@ -467,5 +467,3 @@ if __name__ == "__main__":
     else:
         print("Output not saved.")
     plt.close()
-
-# %%
