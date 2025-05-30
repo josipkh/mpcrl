@@ -123,7 +123,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
         s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
-        # add road bank effect (constant disturbance)
+        # add road bank effect (constant disturbance; 5 deg = 0.106 dimensionless)
         road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
         g = 9.81 if vehicle_size == "large" else 0.9418  # TODO: remove the hack with gravity scaling
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
@@ -162,8 +162,11 @@ class LinearMpc(Mpc[cs.SX]):
 
     use_learned_parameters = True  # to test the learned (dimensionless) policy transfer
     if use_learned_parameters:
-        c = np.load('/home/josip/mpcrl/examples/jkh/vehicle_steering/output_2025-05-28_16-28-06-small-learned/learned_parameters.npz')
-        learnable_pars_init = {key: value for key, value in c.items()}
+        examples_folder = '/home/josip/mpcrl/examples/jkh/vehicle_steering'
+        output_folder = 'output_2025-05-29_18-15-12-small-learned'
+        file_name = 'learned_parameters.npz'
+        learned_parameters = np.load(examples_folder + '/' + output_folder + '/' + file_name)
+        learnable_pars_init = {key: value for key, value in learned_parameters.items()}
     else:
         learnable_pars_init = {
             "V0": np.zeros(nx),  # cost modification, V0*x0
@@ -284,7 +287,7 @@ if __name__ == "__main__":
     # instantiate the env and wrap it - since we will train for only one long episode,
     # tell the DPG agent to perform its LSTD computations over subtrajectories of length
     # 100.
-    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=3_000))
+    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=10_000))
     rollout_length = 100
 
     # now build the MPC and the dict of learnable parameters
@@ -303,7 +306,7 @@ if __name__ == "__main__":
                 mpc=mpc,
                 learnable_parameters=learnable_pars,
                 discount_factor=mpc.discount_factor,
-                optimizer=GradientDescent(learning_rate=1e-6),
+                optimizer=GradientDescent(learning_rate=1e-5),
                 update_strategy=UpdateStrategy(rollout_length, "on_timestep_end"),
                 rollout_length=rollout_length,
                 exploration=E.OrnsteinUhlenbeckExploration(0.0, 0.05*LtiSystem.a_bnd[1], mode="additive"),
@@ -445,6 +448,8 @@ if __name__ == "__main__":
         main_folder_path = "/home/josip/mpcrl/examples/jkh/vehicle_steering"
         new_folder_path = f"output_{timestamp}"
         folder_path = os.path.join(main_folder_path, new_folder_path)
+        folder_path += f"-{vehicle_size}"  # append vehicle size
+        folder_path += "-transfer" if LinearMpc.use_learned_parameters else "-learned"
         os.makedirs(folder_path, exist_ok=True)
 
         # save the figures
