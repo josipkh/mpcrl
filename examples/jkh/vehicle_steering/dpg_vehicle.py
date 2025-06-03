@@ -44,9 +44,13 @@ from vehicle_model import (
     get_nondim_matrices,
 )
 
+from experiment_configs import configs
+
+experiment_config = configs["large_transfer"]  # or "small_learn", "large_learn", "test"
+
 dimensionless = True  # set to True to use the dimensionless approach
-vehicle_size = "large"  # "large" or "small"
-use_learned_parameters = False  # to test the learned (dimensionless) policy transfer
+vehicle_size = experiment_config["vehicle_size"]
+use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
 if dimensionless:
     Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)  # x(physical) = Mx * x(dimensionless)
     Mx_inv = np.linalg.inv(Mx)
@@ -286,7 +290,7 @@ if __name__ == "__main__":
     # instantiate the env and wrap it - since we will train for only one long episode,
     # tell the DPG agent to perform its LSTD computations over subtrajectories of length
     # 100.
-    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=10_000))
+    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=experiment_config["max_episode_steps"]))
     rollout_length = 100
 
     # now build the MPC and the dict of learnable parameters
@@ -305,7 +309,7 @@ if __name__ == "__main__":
                 mpc=mpc,
                 learnable_parameters=learnable_pars,
                 discount_factor=mpc.discount_factor,
-                optimizer=GradientDescent(learning_rate=1e-5),
+                optimizer=GradientDescent(learning_rate=experiment_config["learning_rate"]),
                 update_strategy=UpdateStrategy(rollout_length, "on_timestep_end"),
                 rollout_length=rollout_length,
                 exploration=E.OrnsteinUhlenbeckExploration(0.0, 0.05*LtiSystem.a_bnd[1], mode="additive"),
