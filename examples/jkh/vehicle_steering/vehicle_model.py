@@ -12,7 +12,6 @@ from scipy.signal import cont2discrete
 from dataclasses import dataclass, field
 from utils import contains_symbolics, cont2discrete_symbolic
 
-vehicle_size = "large"  # "large" or "small" vehicle size, affects the parameters
 
 vehicle_configs = {
     "large": {
@@ -42,6 +41,7 @@ vehicle_configs = {
 
 @dataclass(kw_only=True)
 class VehicleParams:
+    vehicle_size: str
     cf: float = field(default=None)
     cr: float = field(default=None)
     m: float = field(default=None)
@@ -53,8 +53,8 @@ class VehicleParams:
     sw_max: float = field(default=None)
 
     def __post_init__(self):
-        if self.cf is None:
-            config = vehicle_configs[vehicle_size]
+        if self.vehicle_size is not None:
+            config = vehicle_configs[self.vehicle_size]
             self.cf = config['cf']
             self.cr = config['cr']
             self.m = config['m']
@@ -64,6 +64,8 @@ class VehicleParams:
             self.iz = config['iz']
             self.isw = config['isw']
             self.sw_max = config['sw_max']
+        else:
+            raise ValueError("vehicle_size must be specified in VehicleParams. Use 'large' or 'small'.")
             
     # cf:     float | ca.SX = 63271.7                 # [N/rad]   front cornering stiffness (for one tire)
     # cr:     float | ca.SX = 63271.7                 # [N/rad]   rear cornering stiffness (for one tire)
@@ -77,7 +79,7 @@ class VehicleParams:
 
 
 def get_A_cont(
-    vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
+    vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
     cf = vehicle_params.cf
     cr = vehicle_params.cr
@@ -104,7 +106,7 @@ def get_A_cont(
     
 
 def get_B_steer_cont(
-    vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
+    vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
     cf = vehicle_params.cf
     m = vehicle_params.m
@@ -123,7 +125,7 @@ def get_B_steer_cont(
     
     
 def get_B_ref_cont(
-    vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
+    vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
     cf = vehicle_params.cf
     cr = vehicle_params.cr
@@ -147,7 +149,8 @@ def get_B_ref_cont(
         return np.array([[0, row_2, 0, row_4]]).T
     
     
-def get_continuous_system(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+def get_continuous_system(vehicle_size: str) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
     A_cont = get_A_cont(vehicle_params=vehicle_params)
     B_steer_cont = get_B_steer_cont(vehicle_params=vehicle_params)
     B_ref_cont = get_B_ref_cont(vehicle_params=vehicle_params)
@@ -158,15 +161,16 @@ def get_continuous_system(vehicle_params: dict[str, float | ca.SX] | None = Vehi
     return A_cont, B_cont
 
 
-def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams(), dt: float = 0.05, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
-    A_cont, B_cont = get_continuous_system(vehicle_params=vehicle_params)
+def get_discrete_system(vehicle_size: str, dt: float = 0.05, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
+    A_cont, B_cont = get_continuous_system(vehicle_size=vehicle_size)
     if method == "dimensionless":
-        Mx, Mu, Mt = get_nondim_matrices(vehicle_params=vehicle_params)
+        Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)
         Mx_inv = np.linalg.inv(Mx)
         A_cont = Mt * Mx_inv @ A_cont @ Mx
         B_cont = Mt * Mx_inv @ B_cont * Mu
         dt = (np.linalg.inv(Mt) * dt).item()
-        sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="zoh")
+        sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
     elif method == "bilinear":
         if contains_symbolics(A_cont) or contains_symbolics(B_cont):
             sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
@@ -179,8 +183,10 @@ def get_discrete_system(vehicle_params: dict[str, float | ca.SX] | None = Vehicl
     return A_disc, B_disc
 
 
-def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[float | ca.SX]:
+def get_bounds(vehicle_size: str) -> tuple[float | ca.SX]:
     """Get state and action bounds for the specific vehicle."""
+    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
+
     ey_ub = (vehicle_params.lf + vehicle_params.lr) / 2
     dey_ub = 0.5 * vehicle_params.vx
     epsi_ub = np.deg2rad(45)
@@ -198,7 +204,7 @@ def get_bounds(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()
     return s_lb, s_ub, a_lb, a_ub, e_lb, e_ub
 
 
-def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
+def get_cost_matrices(vehicle_size: str) -> tuple[np.ndarray, np.ndarray]:
     """Returns the quadratic cost matrices for the controller (x'Qx + u'Ru)."""
     if vehicle_size == "large":
         Q = np.diag([1, 1e-3, 1, 1e-3])
@@ -213,8 +219,9 @@ def get_cost_matrices() -> tuple[np.ndarray, np.ndarray]:
     return Q, R, w
 
 
-def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX] | None = VehicleParams()) -> tuple[np.ndarray]:
+def get_nondim_matrices(vehicle_size: str) -> tuple[np.ndarray]:
     """Returns the matrices for transforming the system to a non-dimensional form."""
+    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
     vx = vehicle_params.vx
     L = vehicle_params.lf + vehicle_params.lr
 

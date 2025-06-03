@@ -42,12 +42,13 @@ from vehicle_model import (
     get_bounds,
     get_cost_matrices,
     get_nondim_matrices,
-    vehicle_size
 )
 
 dimensionless = True  # set to True to use the dimensionless approach
+vehicle_size = "large"  # "large" or "small"
+use_learned_parameters = False  # to test the learned (dimensionless) policy transfer
 if dimensionless:
-    Mx, Mu, Mt = get_nondim_matrices()  # x(physical) = Mx * x(dimensionless)
+    Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)  # x(physical) = Mx * x(dimensionless)
     Mx_inv = np.linalg.inv(Mx)
     Mu_inv = np.linalg.inv(Mu)
     Mt_inv = np.linalg.inv(Mt)
@@ -67,12 +68,12 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
     ns = 4  # number of states
     na = 1  # number of actions
-    A, B = get_discrete_system()  # dynamics matrices
-    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds()  # bounds of state, action and disturbance
+    A, B = get_discrete_system(vehicle_size=vehicle_size)  # dynamics matrices
+    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_size=vehicle_size)  # bounds of state, action and disturbance
     s_bnd = (s_lb, s_ub)  # bounds of state
     a_bnd = (a_lb, a_ub)  # bounds of control input
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
-    Q, R, w = get_cost_matrices()  # quadratic cost matrices
+    Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)  # quadratic cost matrices
 
     # make the reward dimensionless if needed
     if dimensionless:
@@ -151,19 +152,17 @@ class LinearMpc(Mpc[cs.SX]):
 
     horizon = 10
     discount_factor = 0.9
-    vehicle_params = VehicleParams()
     dt = 0.05  # [s] sampling time
     nx, nu = LtiSystem.ns, LtiSystem.na  # number of states and actions
 
     if dimensionless:
-        A_init, B_init = get_discrete_system(dt=dt, method="dimensionless")
+        A_init, B_init = get_discrete_system(vehicle_size=vehicle_size, dt=dt, method="dimensionless")
     else:
-        A_init, B_init = get_discrete_system(dt=dt, method="bilinear")
+        A_init, B_init = get_discrete_system(vehicle_size=vehicle_size, dt=dt, method="bilinear")
 
-    use_learned_parameters = True  # to test the learned (dimensionless) policy transfer
     if use_learned_parameters:
         examples_folder = '/home/josip/mpcrl/examples/jkh/vehicle_steering'
-        output_folder = 'output_2025-05-29_18-15-12-small-learned'
+        output_folder = 'output_2025-05-30_09-59-39-small-learned'
         file_name = 'learned_parameters.npz'
         learned_parameters = np.load(examples_folder + '/' + output_folder + '/' + file_name)
         learnable_pars_init = {key: value for key, value in learned_parameters.items()}
@@ -216,7 +215,7 @@ class LinearMpc(Mpc[cs.SX]):
         # self.constraint("du_ub", du, "<=",  du_ub)
 
         # objective
-        Q, R, w = get_cost_matrices()
+        Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)
         if dimensionless:
             Q = Mx.T @ Q @ Mx
             R = Mu.T @ R @ Mu
@@ -332,12 +331,13 @@ if __name__ == "__main__":
     U = env.get_wrapper_attr("actions")[0].squeeze()
     R = env.get_wrapper_attr("rewards")[0]
 
+    # scale the logs back to the physical values if needed
     if dimensionless:
         X = Mx @ X
         U = (Mu * U).ravel()
         # TODO: reward scaling back?
 
-    vehicle_params = LinearMpc.vehicle_params
+    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
     isw = vehicle_params.isw
 
     e1 = X[0,:]
@@ -449,7 +449,7 @@ if __name__ == "__main__":
         new_folder_path = f"output_{timestamp}"
         folder_path = os.path.join(main_folder_path, new_folder_path)
         folder_path += f"-{vehicle_size}"  # append vehicle size
-        folder_path += "-transfer" if LinearMpc.use_learned_parameters else "-learned"
+        folder_path += "-transfer" if use_learned_parameters else "-learned"
         os.makedirs(folder_path, exist_ok=True)
 
         # save the figures
