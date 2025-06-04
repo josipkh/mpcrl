@@ -46,9 +46,11 @@ from vehicle_model import (
 
 from experiment_configs import configs
 
-experiment_config = configs["large_transfer"]  # or "small_learn", "large_learn", "test"
-
+# available experiment configurations:
+# "small_learn", "large_learn", "large_transfer", "test"
+experiment_config = configs["large_transfer"]
 dimensionless = True  # set to True to use the dimensionless approach
+
 vehicle_size = experiment_config["vehicle_size"]
 use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
 if dimensionless:
@@ -128,9 +130,10 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
         s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
-        # add road bank effect (constant disturbance; 5 deg = 0.106 dimensionless)
-        road_bank_angle = np.deg2rad(5)  # up to 5 degrees should be realistic
-        g = 9.81 if vehicle_size == "large" else 0.9418  # TODO: remove the hack with gravity scaling
+        # add road bank effect (constant disturbance; 5 deg -> 0.106 dimensionless)
+        road_bank_angle = 5 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
+        road_bank_angle = np.deg2rad(road_bank_angle)
+        g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
         self.s = s_new  # keep this physical
