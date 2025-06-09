@@ -42,14 +42,14 @@ vehicle_configs = {
 @dataclass(kw_only=True)
 class VehicleParams:
     vehicle_size: str
-    cf: float = field(default=None)
-    cr: float = field(default=None)
-    m: float = field(default=None)
-    vx: float = field(default=None)
-    lf: float = field(default=None)
-    lr: float = field(default=None)
-    iz: float = field(default=None)
-    isw: float = field(default=None)
+    cf:     float = field(default=None)
+    cr:     float = field(default=None)
+    m:      float = field(default=None)
+    vx:     float = field(default=None)
+    lf:     float = field(default=None)
+    lr:     float = field(default=None)
+    iz:     float = field(default=None)
+    isw:    float = field(default=None)
     sw_max: float = field(default=None)
 
     def __post_init__(self):
@@ -66,16 +66,6 @@ class VehicleParams:
             self.sw_max = config['sw_max']
         else:
             raise ValueError("vehicle_size must be specified in VehicleParams. Use 'large' or 'small'.")
-            
-    # cf:     float | ca.SX = 63271.7                 # [N/rad]   front cornering stiffness (for one tire)
-    # cr:     float | ca.SX = 63271.7                 # [N/rad]   rear cornering stiffness (for one tire)
-    # m:      float | ca.SX = 1600.0                  # [kg]      vehicle mass
-    # vx:     float | ca.SX = 15.6                    # [m/s]     longitudinal vehicle speed
-    # lf:     float | ca.SX = 1.1578                  # [m]       distance from the center of gravity to the front axle
-    # lr:     float | ca.SX = 1.4642                  # [m]       distance from the center of gravity to the rear axle
-    # iz:     float | ca.SX = 2675.7                  # [kg*m^2]  vehicle moment of inertia
-    # isw:    float | ca.SX = 13                      # [-]       steering ratio
-    # sw_max: float | ca.SX = float(np.deg2rad(90))   # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
 
 
 def get_A_cont(
@@ -162,7 +152,6 @@ def get_continuous_system(vehicle_size: str) -> tuple[np.ndarray | ca.SX, np.nda
 
 
 def get_discrete_system(vehicle_size: str, dt: float = 0.05, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
-    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
     A_cont, B_cont = get_continuous_system(vehicle_size=vehicle_size)
     if method == "dimensionless":
         Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)
@@ -229,3 +218,22 @@ def get_nondim_matrices(vehicle_size: str) -> tuple[np.ndarray]:
     Mu = np.diag([1.0])  # input is an angle, no transformation needed
     Mt = np.diag([L/vx])  # time transformation
     return Mx, Mu, Mt 
+
+
+if __name__ == "__main__":
+    # Example usage
+    vehicle_size = "large"
+    dt = 0.05
+    A_disc, B_disc = get_discrete_system(vehicle_size=vehicle_size, dt=dt)
+    print("Discrete A matrix:\n", A_disc)
+    print("Discrete B matrix:\n", B_disc)
+
+    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_size=vehicle_size)
+    print("State bounds:", s_lb, s_ub)
+    print("Action bounds:", a_lb, a_ub)
+    print("Error bounds:", e_lb, e_ub)
+
+    Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)
+    print("Cost matrices Q:\n", Q)
+    print("Cost matrices R:\n", R)
+    print("Penalty weights w:\n", w)

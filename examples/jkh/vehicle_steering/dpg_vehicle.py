@@ -48,8 +48,8 @@ from experiment_configs import configs
 
 # available experiment configurations:
 # "small_learn", "large_learn", "large_transfer", "test"
-experiment_config = configs["large_transfer"]
-dimensionless = True  # set to True to use the dimensionless approach
+experiment_config = configs["test"]
+dimensionless = False  # set to True to use the dimensionless approach
 
 vehicle_size = experiment_config["vehicle_size"]
 use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
@@ -87,6 +87,9 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         R = Mu.T @ R @ Mu
         w = Mx @ w
 
+    # define the observation space (primarily for episode termination)
+    observation_space = Box(*s_bnd, (ns,1), np.float64)
+
     # extremely recommended to bound the action space with additive exploration so that
     # we can clip the action before applying it to the system
     action_space = Box(*a_bnd, (na,), np.float64)
@@ -99,7 +102,10 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     ) -> tuple[npt.NDArray[np.floating], dict[str, Any]]:
         """Resets the state of the LTI system."""
         super().reset(seed=seed, options=options)
-        self.s = np.asarray([0.0, 0.0, 0.0, 0.0]).reshape(self.ns, 1)
+        ey0 = 1.0 if vehicle_size == "large" else 0.1
+        # ey0 = 0.0
+        s0 = [ey0, 0.0, 0.0, 0.0]
+        self.s = np.asarray(s0).reshape(self.ns, 1)
         return self.s, {}
 
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
@@ -122,7 +128,10 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         self, action: cs.DM
     ) -> tuple[npt.NDArray[np.floating], float, bool, bool, dict[str, Any]]:
         """Steps the LTI system."""
-        action = np.asarray(action).item()
+        action = np.asarray(action)
+        if not self.action_space.contains(action):
+            print(f"WARNING: Action {action.item():.4f} is out of bounds ({self.action_space.low[0]:.4f}, {self.action_space.high[0]:.4f})")
+        action = action.item()
 
         if dimensionless:
             action = (Mu * action).item()  # transform to dimensional action
@@ -130,11 +139,18 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
         s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
-        # add road bank effect (constant disturbance; 5 deg -> 0.106 dimensionless)
-        road_bank_angle = 5 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
+        # add road bank effect (constant disturbance; 5 deg for "large" -> 0.106 dimensionless)
+        road_bank_angle = 20 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
         road_bank_angle = np.deg2rad(road_bank_angle)
         g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
+
+        # check if the new state is within bounds
+        terminated = not self.observation_space.contains(s_new)
+        if terminated:
+            print("WARNING: State is out of bounds, terminating episode...")
+        truncated = False
+        info = {}
 
         self.s = s_new  # keep this physical
         if dimensionless:
@@ -143,7 +159,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
         r = self.get_stage_cost(s_new, action)  # use the dimensionless state for the reward
 
-        return s_new, r, False, False, {}
+        return s_new, r, terminated, truncated, info
 
 
 # %%
@@ -158,7 +174,7 @@ class LinearMpc(Mpc[cs.SX]):
     """A simple linear MPC controller."""
 
     horizon = 10
-    discount_factor = 0.9
+    discount_factor = 0.99
     dt = 0.05  # [s] sampling time
     nx, nu = LtiSystem.ns, LtiSystem.na  # number of states and actions
 
@@ -169,7 +185,7 @@ class LinearMpc(Mpc[cs.SX]):
 
     if use_learned_parameters:
         examples_folder = '/home/josip/mpcrl/examples/jkh/vehicle_steering'
-        output_folder = 'output_2025-05-30_09-59-39-small-learned'
+        output_folder = 'output_2025-06-05_11-28-35-small-learned'
         file_name = 'learned_parameters.npz'
         learned_parameters = np.load(examples_folder + '/' + output_folder + '/' + file_name)
         learnable_pars_init = {key: value for key, value in learned_parameters.items()}
@@ -258,9 +274,9 @@ class LinearMpc(Mpc[cs.SX]):
             # opts["jit_temp_suffix"] = False
             # opts["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
 
-            self.init_solver(opts, solver="fatrop", type="nlp")
+            self.init_solver(opts, solver="ipopt", type="nlp")
         elif solver == "QP":
-            opts = {"osqp": {"verbose": False}, "error_on_fail": False}
+            opts = {"osqp": {"verbose": False}}  # , "error_on_fail": False
             self.init_solver(opts, solver="osqp", type="conic")
 
 
@@ -326,7 +342,7 @@ if __name__ == "__main__":
     )
 
     # launch the training simulation
-    agent.train(env=env, episodes=1, seed=69)
+    agent.train(env=env, episodes=1, seed=0)
 
     # %%
     # Display the results
@@ -356,26 +372,29 @@ if __name__ == "__main__":
     ddelta_sw = 1/LinearMpc.dt * np.diff(delta_sw, prepend=0)  # steering rate in deg/s
 
     # results in the error frame
-    fig1, axs1 = plt.subplots(6, sharex=True, constrained_layout=True)
-    fig1.suptitle('Vehicle steering in closed loop (error frame)')
-    axs1[0].plot(x, e1)
-    axs1[0].set_ylabel('$e_y$ [m]')
-    axs1[1].plot(x, np.rad2deg(e2))
-    axs1[1].set_ylabel(r'$e_\psi$ [deg]')
-    axs1[2].plot(x, X[1,:])
-    axs1[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
-    axs1[3].plot(x, np.rad2deg(X[3,:]))
-    axs1[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
-    axs1[4].plot(x[:-1], delta_sw)
-    axs1[4].axhline( steer_max, color="r", linestyle='--')
-    axs1[4].axhline(-steer_max, color="r", linestyle='--')
-    axs1[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
-    axs1[5].plot(x[:-1], ddelta_sw)
-    axs1[5].axhline( dsteer_max, color="r", linestyle='--')
-    axs1[5].axhline(-dsteer_max, color="r", linestyle='--')
-    axs1[5].set_ylabel(r'$\dot{\delta}_\mathrm{sw}$ [deg/s]')
-    axs1[5].set_xlabel('$k$')
-    fig1.align_ylabels()
+    try:
+        fig1, axs1 = plt.subplots(6, sharex=True, constrained_layout=True)
+        fig1.suptitle('Vehicle steering in closed loop (error frame)')
+        axs1[0].plot(x, e1)
+        axs1[0].set_ylabel('$e_y$ [m]')
+        axs1[1].plot(x, np.rad2deg(e2))
+        axs1[1].set_ylabel(r'$e_\psi$ [deg]')
+        axs1[2].plot(x, X[1,:])
+        axs1[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
+        axs1[3].plot(x, np.rad2deg(X[3,:]))
+        axs1[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
+        axs1[4].plot(x[:-1], delta_sw)
+        axs1[4].axhline( steer_max, color="r", linestyle='--')
+        axs1[4].axhline(-steer_max, color="r", linestyle='--')
+        axs1[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
+        axs1[5].plot(x[:-1], ddelta_sw)
+        axs1[5].axhline( dsteer_max, color="r", linestyle='--')
+        axs1[5].axhline(-dsteer_max, color="r", linestyle='--')
+        axs1[5].set_ylabel(r'$\dot{\delta}_\mathrm{sw}$ [deg/s]')
+        axs1[5].set_xlabel('$k$')
+        fig1.align_ylabels()
+    except:
+        print("Could not plot the error frame results. Skipping...")
 
     # # results in the inertial frame
     # _, y_ref, psi_ref = get_double_lane_change_data(x)
@@ -412,35 +431,41 @@ if __name__ == "__main__":
     # axs[1].set_ylabel("$s_2$")
     # axs[2].set_ylabel("$a$")
 
-    fig2, axs2 = plt.subplots(3, 1, constrained_layout=True)
-    fig2.suptitle('Performance and policy gradient')
-    axs2[0].plot(agent.policy_performances)
-    axs2[1].semilogy(np.linalg.norm(agent.policy_gradients, axis=1))
-    axs2[2].semilogy(R, "o", markersize=1)
-    axs2[0].set_ylabel(r"$J(\pi_\theta)$")
-    axs2[1].set_ylabel(r"$||\nabla_\theta J(\pi_\theta)||$")
-    axs2[2].set_ylabel("$L$")
-    fig2.align_ylabels()
+    try:
+        fig2, axs2 = plt.subplots(3, 1, constrained_layout=True)
+        fig2.suptitle('Performance and policy gradient')
+        axs2[0].plot(agent.policy_performances)
+        axs2[1].semilogy(np.linalg.norm(agent.policy_gradients, axis=1))
+        axs2[2].semilogy(R, "o", markersize=1)
+        axs2[0].set_ylabel(r"$J(\pi_\theta)$")
+        axs2[1].set_ylabel(r"$||\nabla_\theta J(\pi_\theta)||$")
+        axs2[2].set_ylabel("$L$")
+        fig2.align_ylabels()
+    except:
+        print("Could not plot the performance and policy gradient. Skipping...")
 
-    fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
-    fig3.suptitle('Parameter values')
-    axs3[0, 0].plot(np.asarray(agent.updates_history["b"]))
-    axs3[0, 1].plot(
-        np.stack(
-            [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
-        ),
-    )
-    axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
-    axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
-    axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
-    axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
-    axs3[0, 0].set_ylabel("$b$")
-    axs3[0, 1].set_ylabel("$x$ backoff")
-    axs3[1, 0].set_ylabel("$f$")
-    axs3[1, 1].set_ylabel("$V_0$")
-    axs3[2, 0].set_ylabel("$A$")
-    axs3[2, 1].set_ylabel("$B$")
-    fig3.align_ylabels()
+    try:
+        fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
+        fig3.suptitle('Parameter values')
+        axs3[0, 0].plot(np.asarray(agent.updates_history["b"]))
+        axs3[0, 1].plot(
+            np.stack(
+                [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
+            ),
+        )
+        axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
+        axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
+        axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
+        axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
+        axs3[0, 0].set_ylabel("$b$")
+        axs3[0, 1].set_ylabel("$x$ backoff")
+        axs3[1, 0].set_ylabel("$f$")
+        axs3[1, 1].set_ylabel("$V_0$")
+        axs3[2, 0].set_ylabel("$A$")
+        axs3[2, 1].set_ylabel("$B$")
+        fig3.align_ylabels()
+    except:
+        print("Could not plot the parameters. Skipping...")
 
     plt.show(block=False)
 

@@ -22,6 +22,6 @@ configs = {
         "vehicle_size": "large",
         "use_learned_parameters": False,
         "learning_rate": 1e-5,
-        "max_episode_steps": 10_000,
+        "max_episode_steps": 3_000,
     }
 }
