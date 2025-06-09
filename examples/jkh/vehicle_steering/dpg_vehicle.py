@@ -129,7 +129,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     ) -> tuple[npt.NDArray[np.floating], float, bool, bool, dict[str, Any]]:
         """Steps the LTI system."""
         action = np.asarray(action)
-        if not self.action_space.contains(action):
+        if not self.action_space.contains(action.ravel()):
             print(f"WARNING: Action {action.item():.4f} is out of bounds ({self.action_space.low[0]:.4f}, {self.action_space.high[0]:.4f})")
         action = action.item()
 
@@ -140,7 +140,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
         # add road bank effect (constant disturbance; 5 deg for "large" -> 0.106 dimensionless)
-        road_bank_angle = 20 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
+        road_bank_angle = 5 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
         road_bank_angle = np.deg2rad(road_bank_angle)
         g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
