@@ -201,6 +201,10 @@ class LinearMpc(Mpc[cs.SX]):
             # "k": np.asarray([1.0]),  # test learning of individual parameters
         }
 
+    fixed_parameters = {
+        "d": 0.0,  # fixed disturbance (road curvature)
+    }
+
     def __init__(self) -> None:
         N = self.horizon
         gamma = self.discount_factor
@@ -224,9 +228,11 @@ class LinearMpc(Mpc[cs.SX]):
         x, _ = self.state("x", nx, bound_initial=False)
         u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
+        d = self.disturbance("d", 1)  # for the road curvature
 
-        # dynamics
-        self.set_affine_dynamics(A, B, c=b)
+        # dynamics (x_+ = A x + B u + D w + c)
+        D = self.B_init[:,1,np.newaxis]  # the B matrix for the road curvature
+        self.set_affine_dynamics(A, B, D, c=b)
 
         # other constraints
         self.constraint("x_lb", x_bnd[0] + x_lb - s, "<=", x[:, 1:])
@@ -314,7 +320,7 @@ if __name__ == "__main__":
 
     # now build the MPC and the dict of learnable parameters
     mpc = LinearMpc()
-    learnable_pars = LearnableParametersDict[cs.SX](
+    learnable_parameters = LearnableParametersDict[cs.SX](
         (
             LearnableParameter(name, val.shape, val, sym=mpc.parameters[name])
             for name, val in mpc.learnable_pars_init.items()
@@ -326,7 +332,8 @@ if __name__ == "__main__":
         RecordUpdates(
             LstdDpgAgent(
                 mpc=mpc,
-                learnable_parameters=learnable_pars,
+                learnable_parameters=learnable_parameters,
+                fixed_parameters=mpc.fixed_parameters,
                 discount_factor=mpc.discount_factor,
                 optimizer=GradientDescent(learning_rate=experiment_config["learning_rate"]),
                 update_strategy=UpdateStrategy(rollout_length, "on_timestep_end"),
