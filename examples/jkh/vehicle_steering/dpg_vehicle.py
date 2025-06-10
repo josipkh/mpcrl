@@ -44,14 +44,12 @@ from vehicle_model import (
     get_nondim_matrices,
 )
 
-from experiment_configs import configs
+from test_configs import configs
 
-# available experiment configurations:
-# "small_learn", "large_learn", "large_transfer", "test"
 experiment_config = configs["test"]
-dimensionless = False  # set to True to use the dimensionless approach
+dimensionless = experiment_config["dimensionless"]  # set to True to use the dimensionless approach
 
-vehicle_size = experiment_config["vehicle_size"]
+vehicle_size = experiment_config["env"]["vehicle_size"]
 use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
 if dimensionless:
     Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)  # x(physical) = Mx * x(dimensionless)
@@ -140,7 +138,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
 
         # add road bank effect (constant disturbance; 5 deg for "large" -> 0.106 dimensionless)
-        road_bank_angle = 5 if vehicle_size == "large" else 0.479433  # up to 5 degrees should be realistic
+        road_bank_angle = experiment_config["env"]["road_bank_angle"]  # [deg]
         road_bank_angle = np.deg2rad(road_bank_angle)
         g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
@@ -148,7 +146,8 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         # check if the new state is within bounds
         terminated = not self.observation_space.contains(s_new)
         if terminated:
-            print("WARNING: State is out of bounds, terminating episode...")
+            # TODO: more verbose termination info (which state is out of bounds?)
+            print("WARNING: State is out of bounds, terminating episode...")            
         truncated = False
         info = {}
 
@@ -191,13 +190,13 @@ class LinearMpc(Mpc[cs.SX]):
         learnable_pars_init = {key: value for key, value in learned_parameters.items()}
     else:
         learnable_pars_init = {
-            "V0": np.zeros(nx),  # cost modification, V0*x0
-            "x_lb": np.zeros(nx),  # constraint backoff
-            "x_ub": np.zeros(nx),  # constraint backoff
+            # "V0": np.zeros(nx),  # cost modification, V0*x0
+            # "x_lb": np.zeros(nx),  # constraint backoff
+            # "x_ub": np.zeros(nx),  # constraint backoff
             "b": np.zeros(nx),  # affine term in the dynamics
             "f": np.zeros(nx + nu),  # affine term in the cost
-            "A": A_init,
-            "B": B_init[:,0,np.newaxis],  # just the steering input
+            # "A": A_init,
+            # "B": B_init[:,0,np.newaxis],  # just the steering input
             # "k": np.asarray([1.0]),  # test learning of individual parameters
         }
 
@@ -214,21 +213,24 @@ class LinearMpc(Mpc[cs.SX]):
         super().__init__(nlp, N)
 
         # parameters
-        V0 = self.parameter("V0", (nx,))
-        x_lb = self.parameter("x_lb", (nx,))
-        x_ub = self.parameter("x_ub", (nx,))
+        # V0 = self.parameter("V0", (nx,))
+        # x_lb = self.parameter("x_lb", (nx,))
+        # x_ub = self.parameter("x_ub", (nx,))
+        x_lb, x_ub = np.zeros_like(x_bnd[0]), np.zeros_like(x_bnd[0])
         b = self.parameter("b", (nx, 1))
         f = self.parameter("f", (nx + nu, 1))
-        A = self.parameter("A", (nx, nx))
-        B = self.parameter("B", (nx, nu))
+        # A = self.parameter("A", (nx, nx))
+        # B = self.parameter("B", (nx, nu))
+        A, B = self.A_init, self.B_init[:,0,np.newaxis]
+        V0 = cs.DM(np.zeros(nx))
         # k = self.parameter("k", (1,1))
-        # B = k * LtiSystem.B[:, 0, np.newaxis]  # just the steering input
+        # B = k * LtiSystem.B[:, 0, np.newaxis]
 
         # variables (state, action, slack)
         x, _ = self.state("x", nx, bound_initial=False)
         u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
-        d = self.disturbance("d", 1)  # for the road curvature
+        _ = self.disturbance("d", 1)  # for the road curvature (unused)
 
         # dynamics (x_+ = A x + B u + D w + c)
         D = self.B_init[:,1,np.newaxis]  # the B matrix for the road curvature
@@ -238,10 +240,10 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("x_lb", x_bnd[0] + x_lb - s, "<=", x[:, 1:])
         self.constraint("x_ub", x[:, 1:], "<=", x_bnd[1] + x_ub + s)
 
-        # du = u[:, 1:] - u[:, 0:-1]
-        # du_ub = LtiSystem.u_bnd[1] * self.dt  # rate limit, 0 to max in 1 second
-        # self.constraint("du_lb", du, ">=", -du_ub)
-        # self.constraint("du_ub", du, "<=",  du_ub)
+        du = u[:, 1:] - u[:, 0:-1]
+        du_ub = LtiSystem.a_bnd[1] * self.dt  # rate limit, 0 to max in 1 second
+        self.constraint("du_lb", du, ">=", -du_ub)
+        self.constraint("du_ub", du, "<=",  du_ub)
 
         # objective
         Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)
@@ -249,7 +251,8 @@ class LinearMpc(Mpc[cs.SX]):
             Q = Mx.T @ Q @ Mx
             R = Mu.T @ R @ Mu
             w = Mx @ w
-        A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]  # LtiSystem.B[:, 0, np.newaxis]
+        # A_init, B_init = self.learnable_pars_init["A"], self.learnable_pars_init["B"]  # LtiSystem.B[:, 0, np.newaxis]
+        A_init, B_init = A, B
         S = cs.DM(dlqr(A_init, B_init, Q, R)[1])  # terminal cost matrix
         gammapowers = cs.DM(gamma ** np.arange(N)).T
         objective = 0.0
@@ -268,7 +271,7 @@ class LinearMpc(Mpc[cs.SX]):
                 "print_time": False,
                 "bound_consistency": True,
                 "calc_lam_p": False,
-                "fatrop": {"max_iter": 500, "print_level": 0},
+                "ipopt": {"max_iter": 500, "print_level": 0},
             }
             # additional options from the fatrop demo
             # opts["structure_detection"] = "auto",
@@ -349,13 +352,21 @@ if __name__ == "__main__":
     )
 
     # launch the training simulation
-    agent.train(env=env, episodes=1, seed=0)
+    agent.train(env=env, episodes=experiment_config["episodes"], seed=0)
 
     # %%
     # Display the results
     # ----------------
     import matplotlib.pyplot as plt
     plt.rcParams['axes.xmargin'] = 0  # tight x range
+
+    from contextlib import contextmanager
+    @contextmanager
+    def try_plot():
+        try:
+            yield
+        except Exception as e:
+            print(f"Plot skipped: {e}")
 
     X = env.get_wrapper_attr("observations")[0].squeeze().T
     U = env.get_wrapper_attr("actions")[0].squeeze()
@@ -401,7 +412,7 @@ if __name__ == "__main__":
         axs1[5].set_xlabel('$k$')
         fig1.align_ylabels()
     except:
-        print("Could not plot the error frame results. Skipping...")
+        print("Could not plot all error frame results.")
 
     # # results in the inertial frame
     # _, y_ref, psi_ref = get_double_lane_change_data(x)
@@ -449,30 +460,41 @@ if __name__ == "__main__":
         axs2[2].set_ylabel("$L$")
         fig2.align_ylabels()
     except:
-        print("Could not plot the performance and policy gradient. Skipping...")
+        print("Could not plot both the performance and policy gradient.")
 
-    try:
-        fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
-        fig3.suptitle('Parameter values')
+    
+    fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
+    fig3.suptitle('Parameter values')
+    
+    with try_plot():
         axs3[0, 0].plot(np.asarray(agent.updates_history["b"]))
+        axs3[0, 0].set_ylabel("$b$")
+    
+    with try_plot():
         axs3[0, 1].plot(
             np.stack(
                 [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
             ),
         )
-        axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
-        axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
-        axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
-        axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
-        axs3[0, 0].set_ylabel("$b$")
         axs3[0, 1].set_ylabel("$x$ backoff")
+
+    with try_plot():
+        axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
         axs3[1, 0].set_ylabel("$f$")
+
+    with try_plot():
+        axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
         axs3[1, 1].set_ylabel("$V_0$")
+
+    with try_plot():    
+        axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
         axs3[2, 0].set_ylabel("$A$")
+    
+    with try_plot():
+        axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
         axs3[2, 1].set_ylabel("$B$")
-        fig3.align_ylabels()
-    except:
-        print("Could not plot the parameters. Skipping...")
+
+    fig3.align_ylabels()
 
     plt.show(block=False)
 
@@ -501,7 +523,7 @@ if __name__ == "__main__":
             os.path.join(folder_path, "learned_parameters.npz"),
             **{name: val[-1] for name, val in agent.updates_history.items()}
         )
-
+        
         print(f"Output saved in folder: {folder_path}")
     else:
         print("Output not saved.")
