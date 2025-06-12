@@ -2,6 +2,7 @@
 configs = {
     "small_learn": {
         "dimensionless": True,
+        "maneuver": "straight",
         "env": {
             "vehicle_size": "small",
             "road_bank_angle": 0.479433,
@@ -13,6 +14,7 @@ configs = {
     },
     "large_learn": {
         "dimensionless": True,
+        "maneuver": "straight",
         "env": {
             "vehicle_size": "large",
             "road_bank_angle": 5.0,
@@ -24,6 +26,7 @@ configs = {
     },
     "large_transfer": {
         "dimensionless": True,
+        "maneuver": "straight",
         "env": {
             "vehicle_size": "large",
             "road_bank_angle": 5.0,

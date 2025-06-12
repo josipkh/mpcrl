@@ -23,7 +23,8 @@ vehicle_configs = {
         "lr": 1.4642,   # [m]       distance from the center of gravity to the rear axle
         "iz": 2675.7,   # [kg*m^2]  vehicle moment of inertia
         "isw": 13,      # [-]       steering ratio
-        "sw_max": float(np.deg2rad(90))  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+        "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+        "dt": 0.05,     # [s]       sampling time
     },
     "small": {
         "cf": 8.25,     # [N/rad]   front cornering stiffness (for one tire)
@@ -34,7 +35,8 @@ vehicle_configs = {
         "lr": 0.141,    # [m]       distance from the center of gravity to the rear axle
         "iz": 0.0337,   # [kg*m^2]  vehicle moment of inertia
         "isw": 13,      # [-]       steering ratio
-        "sw_max": float(np.deg2rad(90))  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+        "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
+        "dt": 0.05,     # [s]       sampling time
     }
 }
 
@@ -51,6 +53,7 @@ class VehicleParams:
     iz:     float = field(default=None)
     isw:    float = field(default=None)
     sw_max: float = field(default=None)
+    dt:     float = field(default=None)
 
     def __post_init__(self):
         if self.vehicle_size is not None:
@@ -64,6 +67,7 @@ class VehicleParams:
             self.iz = config['iz']
             self.isw = config['isw']
             self.sw_max = config['sw_max']
+            self.dt = config['dt']
         else:
             raise ValueError("vehicle_size must be specified in VehicleParams. Use 'large' or 'small'.")
 
@@ -151,7 +155,7 @@ def get_continuous_system(vehicle_size: str) -> tuple[np.ndarray | ca.SX, np.nda
     return A_cont, B_cont
 
 
-def get_discrete_system(vehicle_size: str, dt: float = 0.05, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+def get_discrete_system(vehicle_size: str, dt: float, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
     A_cont, B_cont = get_continuous_system(vehicle_size=vehicle_size)
     if method == "dimensionless":
         Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)

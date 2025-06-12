@@ -44,18 +44,21 @@ from vehicle_model import (
     get_nondim_matrices,
 )
 
+from utils import get_double_lane_change_data
 from test_configs import configs
 
 experiment_config = configs["test"]
 dimensionless = experiment_config["dimensionless"]  # set to True to use the dimensionless approach
 
 vehicle_size = experiment_config["env"]["vehicle_size"]
+vehicle_params = VehicleParams(vehicle_size=vehicle_size)
 use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
 if dimensionless:
     Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)  # x(physical) = Mx * x(dimensionless)
     Mx_inv = np.linalg.inv(Mx)
     Mu_inv = np.linalg.inv(Mu)
     Mt_inv = np.linalg.inv(Mt)
+
 
 # %%
 # Defining the environment
@@ -72,7 +75,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
     ns = 4  # number of states
     na = 1  # number of actions
-    A, B = get_discrete_system(vehicle_size=vehicle_size)  # dynamics matrices
+    A, B = get_discrete_system(vehicle_size=vehicle_size, dt=vehicle_params.dt)  # dynamics matrices
     s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_size=vehicle_size)  # bounds of state, action and disturbance
     s_bnd = (s_lb, s_ub)  # bounds of state
     a_bnd = (a_lb, a_ub)  # bounds of control input
@@ -92,6 +95,8 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     # we can clip the action before applying it to the system
     action_space = Box(*a_bnd, (na,), np.float64)
 
+    X = 0.0  # global position of the vehicle
+
     def reset(
         self,
         *,
@@ -104,6 +109,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         # ey0 = 0.0
         s0 = [ey0, 0.0, 0.0, 0.0]
         self.s = np.asarray(s0).reshape(self.ns, 1)
+        self.X = 0.0  # reset the long. position
         return self.s, {}
 
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
@@ -143,11 +149,19 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
+        # update the global longitudinal position
+        self.X = self.X + vehicle_params.vx * vehicle_params.dt  # acceptably wrong (assumes small steering angles)
+
         # check if the new state is within bounds
-        terminated = not self.observation_space.contains(s_new)
+        state_out_of_bounds = not self.observation_space.contains(s_new)
+        end_of_maneuver = experiment_config["maneuver"] == "double_lane_change" and self.X >= 200  # [m] maneuver limit
+        terminated = state_out_of_bounds or end_of_maneuver
         if terminated:
-            # TODO: more verbose termination info (which state is out of bounds?)
-            print("WARNING: State is out of bounds, terminating episode...")            
+            if state_out_of_bounds:
+                # TODO: more verbose termination info (which state is out of bounds?)
+                print("WARNING: State is out of bounds, terminating episode...")
+            elif end_of_maneuver:
+                print("INFO: End of maneuver reached, terminating episode...")
         truncated = False
         info = {}
 
@@ -159,7 +173,19 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         r = self.get_stage_cost(s_new, action)  # use the dimensionless state for the reward
 
         return s_new, r, terminated, truncated, info
+    
 
+    def get_yaw_rate_ref(self, horizon: int) -> npt.NDArray[np.floating]:
+        """Returns the yaw rate reference (preview) along the horizon."""
+        if experiment_config["maneuver"] == "straight":
+            road_curvature = np.zeros((1, horizon))
+        elif experiment_config["maneuver"] == "double_lane_change":
+            road_curvature = get_double_lane_change_data(self.X, horizon, vehicle_params)[0]
+        else:
+            raise ValueError("Unknown maneuver specified.")
+        
+        return vehicle_params.vx * road_curvature  # eq. (2.38) in Rajamani
+    
 
 # %%
 # Defining the MPC controller
@@ -174,7 +200,7 @@ class LinearMpc(Mpc[cs.SX]):
 
     horizon = 10
     discount_factor = 0.99
-    dt = 0.05  # [s] sampling time
+    dt = vehicle_params.dt
     nx, nu = LtiSystem.ns, LtiSystem.na  # number of states and actions
 
     if dimensionless:
@@ -184,7 +210,7 @@ class LinearMpc(Mpc[cs.SX]):
 
     if use_learned_parameters:
         examples_folder = '/home/josip/mpcrl/examples/jkh/vehicle_steering'
-        output_folder = 'output_2025-06-05_11-28-35-small-learned'
+        output_folder = 'output_2025-06-10_18-37-56-large-learned'  # 'output_2025-06-05_11-28-35-small-learned'
         file_name = 'learned_parameters.npz'
         learned_parameters = np.load(examples_folder + '/' + output_folder + '/' + file_name)
         learnable_pars_init = {key: value for key, value in learned_parameters.items()}
@@ -201,7 +227,7 @@ class LinearMpc(Mpc[cs.SX]):
         }
 
     fixed_parameters = {
-        "d": 0.0,  # fixed disturbance (road curvature)
+        "d": np.zeros((1,horizon)),  # fixed disturbance (yaw rate reference)
     }
 
     def __init__(self) -> None:
@@ -230,10 +256,10 @@ class LinearMpc(Mpc[cs.SX]):
         x, _ = self.state("x", nx, bound_initial=False)
         u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
-        _ = self.disturbance("d", 1)  # for the road curvature (unused)
+        _ = self.disturbance("d", 1)  # for the yaw rate reference
 
         # dynamics (x_+ = A x + B u + D w + c)
-        D = self.B_init[:,1,np.newaxis]  # the B matrix for the road curvature
+        D = self.B_init[:,1,np.newaxis]  # the input matrix for the yaw rate reference
         self.set_affine_dynamics(A, B, D, c=b)
 
         # other constraints
@@ -289,6 +315,25 @@ class LinearMpc(Mpc[cs.SX]):
             self.init_solver(opts, solver="osqp", type="conic")
 
 
+# %% Defining the agent (subclass of LstdDpgAgent, with fixed parameter updates)
+class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
+    def __init__(self, mpc: Mpc[cs.SX], *args: Any, **kwargs: Any) -> None:
+        super().__init__(mpc, *args, **kwargs)
+        self._horizon = mpc.prediction_horizon
+
+    def on_episode_start(self, env: LtiSystem, episode: int, state: np.ndarray) -> None:
+        super().on_episode_start(env, episode, state)
+        self.update_yaw_rate_ref(env)
+
+    def on_timestep_end(self, env: LtiSystem, episode: int, timestep: int) -> None:
+        super().on_timestep_end(env, episode, timestep)
+        self.update_yaw_rate_ref(env)
+
+    def update_yaw_rate_ref(self, env: LtiSystem) -> None:
+        yaw_rate_ref = env.unwrapped.get_yaw_rate_ref(self._horizon)
+        self.fixed_parameters.update(zip("d", yaw_rate_ref))
+
+
 # %%
 # Simulation
 # ----------
@@ -333,7 +378,7 @@ if __name__ == "__main__":
     # build and wrap appropriately the agent
     agent = Log(
         RecordUpdates(
-            LstdDpgAgent(
+            MyLstdDpgAgent(
                 mpc=mpc,
                 learnable_parameters=learnable_parameters,
                 fixed_parameters=mpc.fixed_parameters,
@@ -353,6 +398,7 @@ if __name__ == "__main__":
 
     # launch the training simulation
     agent.train(env=env, episodes=experiment_config["episodes"], seed=0)
+
 
     # %%
     # Display the results
@@ -378,7 +424,6 @@ if __name__ == "__main__":
         U = (Mu * U).ravel()
         # TODO: reward scaling back?
 
-    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
     isw = vehicle_params.isw
 
     e1 = X[0,:]
@@ -523,7 +568,7 @@ if __name__ == "__main__":
             os.path.join(folder_path, "learned_parameters.npz"),
             **{name: val[-1] for name, val in agent.updates_history.items()}
         )
-        
+
         print(f"Output saved in folder: {folder_path}")
     else:
         print("Output not saved.")
