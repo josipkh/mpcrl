@@ -140,8 +140,8 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         if dimensionless:
             action = (Mu * action).item()  # transform to dimensional action
 
-        disturbance = 0 * self.np_random.uniform(*self.e_bnd)  # road curvature
-        s_new = self.A @ self.s + self.B @ np.asarray([[action], [disturbance]])
+        yaw_rate_ref = self.get_yaw_rate_ref(horizon=3)[0]  # get the yaw rate reference (disturbance), first entry only
+        s_new = self.A @ self.s + self.B @ np.asarray([[action], [yaw_rate_ref]])
 
         # add road bank effect (constant disturbance; 5 deg for "large" -> 0.106 dimensionless)
         road_bank_angle = experiment_config["env"]["road_bank_angle"]  # [deg]
