@@ -256,7 +256,7 @@ class LinearMpc(Mpc[cs.SX]):
         x, _ = self.state("x", nx, bound_initial=False)
         u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
-        _ = self.disturbance("d", 1)  # for the yaw rate reference
+        _ = self.disturbance("w", 1)  # for the yaw rate reference
 
         # dynamics (x_+ = A x + B u + D w + c)
         D = self.B_init[:,1,np.newaxis]  # the input matrix for the yaw rate reference
@@ -331,7 +331,7 @@ class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
 
     def update_yaw_rate_ref(self, env: LtiSystem) -> None:
         yaw_rate_ref = env.unwrapped.get_yaw_rate_ref(self._horizon)
-        self.fixed_parameters.update(zip("d", yaw_rate_ref))
+        self.fixed_parameters.update(zip("w", yaw_rate_ref))
 
 
 # %%
