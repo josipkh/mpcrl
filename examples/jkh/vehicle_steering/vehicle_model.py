@@ -25,6 +25,11 @@ vehicle_configs = {
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
+        "cost": {
+            "Q": np.diag([1, 1e-3, 1, 1e-3]),  # quadratic cost matrix for states
+            "R": np.diag([1]),  # quadratic cost matrix for actions
+            "w": np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
+        },
     },
     "small": {
         "cf": 8.25,     # [N/rad]   front cornering stiffness (for one tire)
@@ -37,51 +42,25 @@ vehicle_configs = {
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
+        "cost": {
+            "Q": np.diag([107.83, 0.10816, 1, 1e-3]),  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
+            "R": np.diag([1]),  # quadratic cost matrix for actions
+            "w": np.asarray([[1038.416], [1040], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
+        },
     }
 }
-
-
-@dataclass(kw_only=True)
-class VehicleParams:
-    vehicle_size: str
-    cf:     float = field(default=None)
-    cr:     float = field(default=None)
-    m:      float = field(default=None)
-    vx:     float = field(default=None)
-    lf:     float = field(default=None)
-    lr:     float = field(default=None)
-    iz:     float = field(default=None)
-    isw:    float = field(default=None)
-    sw_max: float = field(default=None)
-    dt:     float = field(default=None)
-
-    def __post_init__(self):
-        if self.vehicle_size is not None:
-            config = vehicle_configs[self.vehicle_size]
-            self.cf = config['cf']
-            self.cr = config['cr']
-            self.m = config['m']
-            self.vx = config['vx']
-            self.lf = config['lf']
-            self.lr = config['lr']
-            self.iz = config['iz']
-            self.isw = config['isw']
-            self.sw_max = config['sw_max']
-            self.dt = config['dt']
-        else:
-            raise ValueError("vehicle_size must be specified in VehicleParams. Use 'large' or 'small'.")
 
 
 def get_A_cont(
     vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
-    cf = vehicle_params.cf
-    cr = vehicle_params.cr
-    m = vehicle_params.m
-    vx = vehicle_params.vx
-    lf = vehicle_params.lf
-    lr = vehicle_params.lr
-    iz = vehicle_params.iz
+    cf = vehicle_params["cf"]
+    cr = vehicle_params["cr"]
+    m = vehicle_params["m"]
+    vx = vehicle_params["vx"]
+    lf = vehicle_params["lf"]
+    lr = vehicle_params["lr"]
+    iz = vehicle_params["iz"]
 
     row_1 = (0, 1, 0, 0)
     row_2 = (0,-(2*cf+2*cr)/(m*vx), (2*cf+2*cr)/m, -(2*cf*lf-2*cr*lr)/(m*vx))
@@ -102,10 +81,10 @@ def get_A_cont(
 def get_B_steer_cont(
     vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
-    cf = vehicle_params.cf
-    m = vehicle_params.m
-    lf = vehicle_params.lf
-    iz = vehicle_params.iz
+    cf = vehicle_params["cf"]
+    m = vehicle_params["m"]
+    lf = vehicle_params["lf"]
+    iz = vehicle_params["iz"]
 
     if any(isinstance(i, ca.SX) for i in [cf, m, lf, iz]):
         return ca.vertcat(
@@ -121,13 +100,13 @@ def get_B_steer_cont(
 def get_B_ref_cont(
     vehicle_params: dict[str, float | ca.SX] | None
 ) -> np.ndarray | ca.SX:
-    cf = vehicle_params.cf
-    cr = vehicle_params.cr
-    m = vehicle_params.m
-    vx = vehicle_params.vx
-    lf = vehicle_params.lf
-    lr = vehicle_params.lr
-    iz = vehicle_params.iz
+    cf = vehicle_params["cf"]
+    cr = vehicle_params["cr"]
+    m = vehicle_params["m"]
+    vx = vehicle_params["vx"]
+    lf = vehicle_params["lf"]
+    lr = vehicle_params["lr"]
+    iz = vehicle_params["iz"]
 
     row_2 = -(2*cf*lf-2*cr*lr)/(m*vx)-vx
     row_4 = -(2*cf*lf**2+2*cr*lr**2)/(iz*vx)
@@ -143,8 +122,7 @@ def get_B_ref_cont(
         return np.array([[0, row_2, 0, row_4]]).T
     
     
-def get_continuous_system(vehicle_size: str) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
-    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
+def get_continuous_system(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
     A_cont = get_A_cont(vehicle_params=vehicle_params)
     B_steer_cont = get_B_steer_cont(vehicle_params=vehicle_params)
     B_ref_cont = get_B_ref_cont(vehicle_params=vehicle_params)
@@ -155,15 +133,18 @@ def get_continuous_system(vehicle_size: str) -> tuple[np.ndarray | ca.SX, np.nda
     return A_cont, B_cont
 
 
-def get_discrete_system(vehicle_size: str, dt: float, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
-    A_cont, B_cont = get_continuous_system(vehicle_size=vehicle_size)
+def get_discrete_system(vehicle_params: dict[str, float | ca.SX], dt: float, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+    A_cont, B_cont = get_continuous_system(vehicle_params=vehicle_params)
     if method == "dimensionless":
-        Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)
+        Mx, Mu, Mt = get_nondim_matrices(vehicle_params=vehicle_params)
         Mx_inv = np.linalg.inv(Mx)
         A_cont = Mt * Mx_inv @ A_cont @ Mx
         B_cont = Mt * Mx_inv @ B_cont * Mu
         dt = (np.linalg.inv(Mt) * dt).item()
-        sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
+        if contains_symbolics(A_cont) or contains_symbolics(B_cont):
+            sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
+        else:
+            sysd = cont2discrete(system=(A_cont, B_cont, np.eye(4), np.zeros(B_cont.shape)), dt=dt, method="bilinear")
     elif method == "bilinear":
         if contains_symbolics(A_cont) or contains_symbolics(B_cont):
             sysd = cont2discrete_symbolic(A=A_cont, B=B_cont, dt=dt, method="bilinear")
@@ -176,47 +157,44 @@ def get_discrete_system(vehicle_size: str, dt: float, method: str = "bilinear") 
     return A_disc, B_disc
 
 
-def get_bounds(vehicle_size: str) -> tuple[float | ca.SX]:
+def get_bounds(vehicle_params: dict[str, float | ca.SX]) -> tuple[float | ca.SX]:
     """Get state and action bounds for the specific vehicle."""
-    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
 
-    ey_ub = (vehicle_params.lf + vehicle_params.lr) / 2
-    dey_ub = 0.5 * vehicle_params.vx
+    ey_ub = (vehicle_params["lf"] + vehicle_params["lr"]) / 2
+    dey_ub = 0.5 * vehicle_params["vx"]
     epsi_ub = np.deg2rad(45)
-    depsi_ub = 100 * vehicle_params.vx / (vehicle_params.lf + vehicle_params.lr)  # pretty large
+    depsi_ub = 100 * vehicle_params["vx"] / (vehicle_params["lf"] + vehicle_params["lr"])  # pretty large
 
     s_ub = np.asarray([[ey_ub], [dey_ub], [epsi_ub], [depsi_ub]])
     s_lb = np.asarray([[-ub[0]] for ub in s_ub])
 
-    a_ub = vehicle_params.sw_max / vehicle_params.isw
+    a_ub = vehicle_params["sw_max"] / vehicle_params["isw"]
     a_lb = -a_ub
 
-    e_ub = 0.03 * vehicle_params.vx  # max. curvature for DLC * vehicle speed
+    e_ub = 0.03 * vehicle_params["vx"]  # max. curvature for DLC * vehicle speed
     e_lb = -e_ub
 
     return s_lb, s_ub, a_lb, a_ub, e_lb, e_ub
 
 
-def get_cost_matrices(vehicle_size: str) -> tuple[np.ndarray, np.ndarray]:
+def get_cost_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray, np.ndarray]:
     """Returns the quadratic cost matrices for the controller (x'Qx + u'Ru)."""
-    if vehicle_size == "large":
-        Q = np.diag([1, 1e-3, 1, 1e-3])
-        R = np.diag([1])
-        w = np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
-    elif vehicle_size == "small":
-        Q = np.diag([107.83, 0.10816, 1, 1e-3])  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
-        R = np.diag([1])
-        w = np.asarray([[1038.416], [1040], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
-    else:
-        raise ValueError(f"MPC weights for size {vehicle_size} not specified. Use 'large' or 'small'.")
+    Q = vehicle_params["cost"]["Q"]
+    R = vehicle_params["cost"]["R"]
+    w = vehicle_params["cost"]["w"]
+
+    # TODO: handle the symbolic case
+    Q = ca.SX(Q) if contains_symbolics(Q) else Q
+    R = ca.SX(R) if contains_symbolics(R) else R
+    w = ca.SX(w) if contains_symbolics(w) else w
+
     return Q, R, w
 
 
-def get_nondim_matrices(vehicle_size: str) -> tuple[np.ndarray]:
+def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray]:
     """Returns the matrices for transforming the system to a non-dimensional form."""
-    vehicle_params = VehicleParams(vehicle_size=vehicle_size)
-    vx = vehicle_params.vx
-    L = vehicle_params.lf + vehicle_params.lr
+    vx = vehicle_params["vx"]
+    L = vehicle_params["lf"] + vehicle_params["lr"]
 
     Mx = np.diag([L, vx, 1.0, vx/L])  # state is [ey, ey_dot, epsi, epsi_dot]
     Mu = np.diag([1.0])  # input is an angle, no transformation needed
@@ -225,19 +203,24 @@ def get_nondim_matrices(vehicle_size: str) -> tuple[np.ndarray]:
 
 
 if __name__ == "__main__":
-    # Example usage
-    vehicle_size = "large"
-    dt = 0.05
-    A_disc, B_disc = get_discrete_system(vehicle_size=vehicle_size, dt=dt)
+    # some simple tests to check the implementation
+    vehicle_size = "small"
+    vehicle_params = vehicle_configs[vehicle_size]
+    dt = vehicle_params["dt"]
+
+    vehicle_params["cf"] = ca.SX.sym("cf")  # convert to symbolic for testing
+    vehicle_params["cost"]["R"] = ca.SX.sym("R")
+
+    A_disc, B_disc = get_discrete_system(vehicle_params=vehicle_params, dt=dt)
     print("Discrete A matrix:\n", A_disc)
     print("Discrete B matrix:\n", B_disc)
 
-    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_size=vehicle_size)
+    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_params=vehicle_params)
     print("State bounds:", s_lb, s_ub)
     print("Action bounds:", a_lb, a_ub)
     print("Error bounds:", e_lb, e_ub)
 
-    Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)
-    print("Cost matrices Q:\n", Q)
-    print("Cost matrices R:\n", R)
+    Q, R, w = get_cost_matrices(vehicle_params=vehicle_params)
+    print("Cost matrix Q:\n", Q)
+    print("Cost matrix R:\n", R)
     print("Penalty weights w:\n", w)

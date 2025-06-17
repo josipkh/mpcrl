@@ -37,7 +37,7 @@ from mpcrl.wrappers.agents import Log, RecordUpdates
 from mpcrl.wrappers.envs import MonitorEpisodes
 
 from vehicle_model import (
-    VehicleParams,
+    vehicle_configs,
     get_discrete_system,
     get_bounds,
     get_cost_matrices,
@@ -51,10 +51,10 @@ experiment_config = configs["test"]
 dimensionless = experiment_config["dimensionless"]  # set to True to use the dimensionless approach
 
 vehicle_size = experiment_config["env"]["vehicle_size"]
-vehicle_params = VehicleParams(vehicle_size=vehicle_size)
+vehicle_params = vehicle_configs[vehicle_size]
 use_learned_parameters = experiment_config["use_learned_parameters"]  # to test the learned (dimensionless) policy transfer
 if dimensionless:
-    Mx, Mu, Mt = get_nondim_matrices(vehicle_size=vehicle_size)  # x(physical) = Mx * x(dimensionless)
+    Mx, Mu, Mt = get_nondim_matrices(vehicle_params=vehicle_params)  # x(physical) = Mx * x(dimensionless)
     Mx_inv = np.linalg.inv(Mx)
     Mu_inv = np.linalg.inv(Mu)
     Mt_inv = np.linalg.inv(Mt)
@@ -75,12 +75,12 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
     ns = 4  # number of states
     na = 1  # number of actions
-    A, B = get_discrete_system(vehicle_size=vehicle_size, dt=vehicle_params.dt)  # dynamics matrices
-    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_size=vehicle_size)  # bounds of state, action and disturbance
+    A, B = get_discrete_system(vehicle_params=vehicle_params, dt=vehicle_params["dt"])  # dynamics matrices
+    s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_params=vehicle_params)  # bounds of state, action and disturbance
     s_bnd = (s_lb, s_ub)  # bounds of state
     a_bnd = (a_lb, a_ub)  # bounds of control input
     e_bnd = (e_lb, e_ub)  # uniform noise bounds
-    Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)  # quadratic cost matrices
+    Q, R, w = get_cost_matrices(vehicle_params=vehicle_params)  # quadratic cost matrices
 
     # make the reward dimensionless if needed
     if dimensionless:
@@ -150,7 +150,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
 
         # update the global longitudinal position
-        self.X = self.X + vehicle_params.vx * vehicle_params.dt  # acceptably wrong (assumes small steering angles)
+        self.X = self.X + vehicle_params["vx"] * vehicle_params["dt"]  # acceptably wrong (assumes small steering angles)
 
         # check if the new state is within bounds
         state_out_of_bounds = not self.observation_space.contains(s_new)
@@ -184,7 +184,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         else:
             raise ValueError("Unknown maneuver specified.")
         
-        return vehicle_params.vx * road_curvature  # eq. (2.38) in Rajamani
+        return vehicle_params["vx"] * road_curvature  # eq. (2.38) in Rajamani
     
 
 # %%
@@ -200,13 +200,13 @@ class LinearMpc(Mpc[cs.SX]):
 
     horizon = 10
     discount_factor = 0.99
-    dt = vehicle_params.dt
+    dt = vehicle_params["dt"]
     nx, nu = LtiSystem.ns, LtiSystem.na  # number of states and actions
 
     if dimensionless:
-        A_init, B_init = get_discrete_system(vehicle_size=vehicle_size, dt=dt, method="dimensionless")
+        A_init, B_init = get_discrete_system(vehicle_params=vehicle_params, dt=dt, method="dimensionless")
     else:
-        A_init, B_init = get_discrete_system(vehicle_size=vehicle_size, dt=dt, method="bilinear")
+        A_init, B_init = get_discrete_system(vehicle_params=vehicle_params, dt=dt, method="bilinear")
 
     if use_learned_parameters:
         examples_folder = '/home/josip/mpcrl/examples/jkh/vehicle_steering'
@@ -272,7 +272,7 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("du_ub", du, "<=",  du_ub)
 
         # objective
-        Q, R, w = get_cost_matrices(vehicle_size=vehicle_size)
+        Q, R, w = get_cost_matrices(vehicle_params=vehicle_params)
         if dimensionless:
             Q = Mx.T @ Q @ Mx
             R = Mu.T @ R @ Mu
@@ -299,7 +299,7 @@ class LinearMpc(Mpc[cs.SX]):
                 "calc_lam_p": False,
                 "ipopt": {"max_iter": 500, "print_level": 0},
             }
-            # additional options from the fatrop demo
+            # additional options from the fatrop demo (TODO: modify csnlp)
             # opts["structure_detection"] = "auto",
             # opts["debug"] = True
             # opts["equality"] = [True for _ in range(N * x.numel())]  # TODO: add False for inequalities
@@ -315,7 +315,7 @@ class LinearMpc(Mpc[cs.SX]):
             self.init_solver(opts, solver="osqp", type="conic")
 
 
-# %% Defining the agent (subclass of LstdDpgAgent, with fixed parameter updates)
+# %% Defining the agent (subclass of LstdDpgAgent, with updating of the fixed parameters)
 class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
     def __init__(self, mpc: Mpc[cs.SX], *args: Any, **kwargs: Any) -> None:
         super().__init__(mpc, *args, **kwargs)
@@ -422,15 +422,15 @@ if __name__ == "__main__":
     if dimensionless:
         X = Mx @ X
         U = (Mu * U).ravel()
-        # TODO: reward scaling back?
+        # the reward is equivalent in both cases (if originally dimensionless)
 
-    isw = vehicle_params.isw
+    isw = vehicle_params["isw"]
 
     e1 = X[0,:]
     e2 = X[2,:]
     delta_sw = isw * np.rad2deg(U)
     x = range(len(e1))
-    steer_max = np.rad2deg(vehicle_params.sw_max)
+    steer_max = np.rad2deg(vehicle_params["sw_max"])
     dsteer_max = steer_max  # max. steering rate in deg/s
     ddelta_sw = 1/LinearMpc.dt * np.diff(delta_sw, prepend=0)  # steering rate in deg/s
 

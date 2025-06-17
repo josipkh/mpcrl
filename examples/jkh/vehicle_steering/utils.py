@@ -1,9 +1,8 @@
 import numpy as np
 import casadi as ca
 from dataclasses import fields, is_dataclass
-# from vehicle_model import VehicleParams  # only for type hinting, causes a circular import
 
-# TODO: typehint for dataclass
+
 def contains_symbolics(object) -> bool:
     """
     Checks if an object contains CasADi symbolics
@@ -17,8 +16,13 @@ def contains_symbolics(object) -> bool:
         return False
     elif isinstance(object, np.ndarray):
         return False
-    elif isinstance(object, ca.SX):
+    elif isinstance(object, ca.SX) or isinstance(object, ca.MX) or isinstance(object, ca.DM):
         return True
+    elif isinstance(object, dict):
+        for _, value in object.items():
+            if isinstance(value, casadi_types):
+                return True
+        return False
     else:
         raise TypeError("unknown object type")
     
@@ -71,10 +75,10 @@ def compute_curvature(p_xy: np.ndarray, dt: float) -> np.ndarray:
     return curvature
 
 
-def get_double_lane_change_data(X: np.ndarray, horizon: int, vehicle_params) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def get_double_lane_change_data(X: np.ndarray, horizon: int, vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generates road curvature, lateral position and yaw angle for a double lane change maneuver."""
 
-    X += vehicle_params.vx * vehicle_params.dt * np.asarray(list(range(horizon)))  # extend X along the horizon
+    X += vehicle_params["vx"] * vehicle_params["dt"] * np.asarray(list(range(horizon)))  # extend X along the horizon
 
     shape = 2.4
     dx1 = 25
@@ -94,6 +98,6 @@ def get_double_lane_change_data(X: np.ndarray, horizon: int, vehicle_params) -> 
     psi = np.arctan(dy1 * (1 / np.cosh(z1))**2 * (1.2 / dx1) - dy2 * (1 / np.cosh(z2))**2 * (1.2 / dx2))
 
     XY = np.vstack((X,Y)).T
-    road_curvature = compute_curvature(p_xy=XY, dt=vehicle_params.dt)  # (min, max) = (-0.024257, 0.027217)
+    road_curvature = compute_curvature(p_xy=XY, dt=vehicle_params["dt"])  # (min, max) = (-0.024257, 0.027217)
 
     return road_curvature, Y, psi
