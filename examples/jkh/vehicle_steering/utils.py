@@ -80,13 +80,17 @@ def get_double_lane_change_data(X: np.ndarray, horizon: int, vehicle_params: dic
 
     X += vehicle_params["vx"] * vehicle_params["dt"] * np.asarray(list(range(horizon)))  # extend X along the horizon
 
+    large_car_length = 2.622 # [m], from a reference large vehicle
+    current_car_length = (vehicle_params["lf"] + vehicle_params["lr"])
+    normalization_factor = current_car_length / large_car_length
+
     shape = 2.4
-    dx1 = 25
-    dx2 = 21.95
-    dy1 = 4.05
-    dy2 = 5.7
-    Xs1 = 27.19
-    Xs2 = 56.46
+    dx1 = 25 * normalization_factor
+    dx2 = 21.95 * normalization_factor
+    dy1 = 4.05 * normalization_factor
+    dy2 = 5.7 * normalization_factor
+    Xs1 = 27.19 * normalization_factor
+    Xs2 = 56.46 * normalization_factor
 
     z1 = shape/dx1*(X - Xs1) - shape/2
     z2 = shape/dx2*(X - Xs2) - shape/2
