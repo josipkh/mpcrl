@@ -15,6 +15,7 @@ def try_plot():
 
 
 def plot_trajectory_error_frame(X, U, vehicle_params):
+    """A single trajectory in the error frame, with the input and input rate."""
     e1 = X[0,:]
     e2 = X[2,:]
     delta_sw = vehicle_params["isw"] * np.rad2deg(U)
@@ -30,21 +31,21 @@ def plot_trajectory_error_frame(X, U, vehicle_params):
         axs1[0].plot(x, e1)
         axs1[0].set_ylabel('$e_y$ [m]')
 
-        axs1[1].plot(x, np.rad2deg(e2))
-        axs1[1].set_ylabel(r'$e_\psi$ [deg]')
+        axs1[1].plot(x, X[1,:])
+        axs1[1].set_ylabel(r'$\dot{e}_y$ [m/s]')
 
-        axs1[2].plot(x, X[1,:])
-        axs1[2].set_ylabel(r'$\dot{e}_y$ [m/s]')
+        axs1[2].plot(x, np.rad2deg(e2))
+        axs1[2].set_ylabel(r'$e_\psi$ [deg]')
 
         axs1[3].plot(x, np.rad2deg(X[3,:]))
         axs1[3].set_ylabel(r'$\dot{e}_\psi$ [deg/s]')
 
-        axs1[4].plot(x[:-1], delta_sw)
+        axs1[4].step(x[:-1], delta_sw, where="post")
         axs1[4].axhline( steer_max, color="r", linestyle='--')
         axs1[4].axhline(-steer_max, color="r", linestyle='--')
         axs1[4].set_ylabel(r'$\delta_\mathrm{sw}$ [deg]')
 
-        axs1[5].plot(x[:-1], ddelta_sw)
+        axs1[5].step(x[:-1], ddelta_sw, where="post")
         axs1[5].axhline( dsteer_max, color="r", linestyle='--')
         axs1[5].axhline(-dsteer_max, color="r", linestyle='--')
         axs1[5].set_ylabel(r'$\dot{\delta}_\mathrm{sw}$ [deg/s]')
@@ -58,6 +59,7 @@ def plot_trajectory_error_frame(X, U, vehicle_params):
 
 
 def plot_performance(agent, R):
+    """Policy gradients and cost."""
     try:
         fig2, axs2 = plt.subplots(3, 1, constrained_layout=True)
         fig2.suptitle('Performance and policy gradient')
@@ -76,6 +78,7 @@ def plot_performance(agent, R):
 
 
 def plot_parameters(agent):
+    """Parameter updates during learning."""
     fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
     fig3.suptitle('Parameter values')
     
@@ -111,20 +114,29 @@ def plot_parameters(agent):
 
     return fig3
 
-def plot_trajectories(trajectories):
+
+def plot_trajectories(trajectories, vehicle_params):
+    """System trajectories during learning."""
     N = len(trajectories)
     cmap = plt.get_cmap('Blues')
     norm = mcolors.Normalize(vmin=1, vmax=N)
+    steer_max = np.rad2deg(vehicle_params["sw_max"])
 
-    fig4, axs4 = plt.subplots(4, sharex=True, constrained_layout=True)
+    fig4, axs4 = plt.subplots(5, sharex=True, constrained_layout=True)
     fig4.suptitle('Learning trajectories')
-    state_labels = ['$e_y$ [m]', r'$e_\psi$ [deg]', r'$\dot{e}_y$ [m/s]', r'$\dot{e}_\psi$ [deg/s]']
+    labels = ['$e_y$ [m]', r'$\dot{e}_y$ [m/s]', r'$e_\psi$ [deg]', r'$\dot{e}_\psi$ [deg/s]', r'$\delta_\mathrm{sw}$ [deg]']
     for i, trajectory in enumerate(trajectories, start=1):
         traj = np.asarray(trajectory)
-        for k in range(4):
-            axs4[k].plot(traj[:,k,:], color=cmap(norm(i)))
+        color=cmap(norm(i)) if N>1 else "#1f77b4"
+        for k in range(len(labels)):
+            if k < 4:
+                axs4[k].plot(traj[:,k,:] if k < 2 else np.rad2deg(traj[:,k,:]), color=color)
+            else:
+                axs4[k].step(range(traj.shape[0]), vehicle_params["isw"]*np.rad2deg(traj[:,k,:]), color=color, where="post")
+                axs4[k].axhline( steer_max, color="r", linestyle='--')
+                axs4[k].axhline(-steer_max, color="r", linestyle='--')
     for k in range(4):
-        axs4[k].set_ylabel(state_labels[k])
+        axs4[k].set_ylabel(labels[k])
     axs4[3].set_xlabel('$k$')
 
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
