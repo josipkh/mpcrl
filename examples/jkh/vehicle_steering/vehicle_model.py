@@ -51,9 +51,8 @@ vehicle_configs = {
 }
 
 
-def get_A_cont(
-    vehicle_params: dict[str, float | ca.SX] | None
-) -> np.ndarray | ca.SX:
+def get_A_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndarray | ca.SX:
+    """ Returns the continuous-time system matrix A for the vehicle model."""
     cf = vehicle_params["cf"]
     cr = vehicle_params["cr"]
     m = vehicle_params["m"]
@@ -62,10 +61,10 @@ def get_A_cont(
     lr = vehicle_params["lr"]
     iz = vehicle_params["iz"]
 
-    row_1 = (0, 1, 0, 0)
-    row_2 = (0,-(2*cf+2*cr)/(m*vx), (2*cf+2*cr)/m, -(2*cf*lf-2*cr*lr)/(m*vx))
-    row_3 = (0, 0, 0, 1)
-    row_4 = (0, -(2*cf*lf-2*cr*lr)/(iz*vx), (2*cf*lf-2*cr*lr)/iz, -(2*cf*lf**2+2*cr*lr**2)/(iz*vx))
+    row_1 = (0.0, 1.0, 0.0, 0.0)
+    row_2 = (0.0,-(2*cf+2*cr)/(m*vx), (2*cf+2*cr)/m, -(2*cf*lf-2*cr*lr)/(m*vx))
+    row_3 = (0.0, 0.0, 0.0, 1.0)
+    row_4 = (0.0, -(2*cf*lf-2*cr*lr)/(iz*vx), (2*cf*lf-2*cr*lr)/iz, -(2*cf*lf**2+2*cr*lr**2)/(iz*vx))
     
     if contains_symbolics(vehicle_params):
         return ca.vertcat(
@@ -75,12 +74,11 @@ def get_A_cont(
             ca.horzcat(*row_4)
         )
     else:
-        return np.array([row_1, row_2, row_3, row_4])
+        return np.array([row_1, row_2, row_3, row_4], dtype=float)
     
 
-def get_B_steer_cont(
-    vehicle_params: dict[str, float | ca.SX] | None
-) -> np.ndarray | ca.SX:
+def get_B_steer_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndarray | ca.SX:
+    """ Returns the B matrix for the steering angle input."""
     cf = vehicle_params["cf"]
     m = vehicle_params["m"]
     lf = vehicle_params["lf"]
@@ -88,18 +86,17 @@ def get_B_steer_cont(
 
     if any(isinstance(i, ca.SX) for i in [cf, m, lf, iz]):
         return ca.vertcat(
-            0,
+            0.0,
             2*cf/m,
-            0,
+            0.0,
             2*cf*lf/iz
         )
     else:
-        return np.array([[0, 2*cf/m, 0, 2*cf*lf/iz]]).T
+        return np.array([[0.0, 2*cf/m, 0.0, 2*cf*lf/iz]]).T
     
     
-def get_B_ref_cont(
-    vehicle_params: dict[str, float | ca.SX] | None
-) -> np.ndarray | ca.SX:
+def get_B_ref_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndarray | ca.SX:
+    """ Returns the B matrix for the reference yaw rate input."""
     cf = vehicle_params["cf"]
     cr = vehicle_params["cr"]
     m = vehicle_params["m"]
@@ -113,16 +110,17 @@ def get_B_ref_cont(
 
     if contains_symbolics(vehicle_params):
         return ca.vertcat(
-            0,
+            0.0,
             row_2,
-            0,
+            0.0,
             row_4
         )
     else:
-        return np.array([[0, row_2, 0, row_4]]).T
+        return np.array([[0.0, row_2, 0.0, row_4]], dtype=float).T
     
-    
+
 def get_continuous_system(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+    """ Returns the continuous-time system matrices A and B for the vehicle model."""
     A_cont = get_A_cont(vehicle_params=vehicle_params)
     B_steer_cont = get_B_steer_cont(vehicle_params=vehicle_params)
     B_ref_cont = get_B_ref_cont(vehicle_params=vehicle_params)
@@ -133,7 +131,9 @@ def get_continuous_system(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.
     return A_cont, B_cont
 
 
-def get_discrete_system(vehicle_params: dict[str, float | ca.SX], dt: float, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+def get_discrete_system(vehicle_params: dict[str, float | ca.SX], dt: float | None = None, method: str = "bilinear") -> tuple[np.ndarray | ca.SX, np.ndarray | ca.SX]:
+    """ Returns the discrete-time system matrices A and B for the vehicle model."""
+    dt = vehicle_params["dt"] if dt is None else dt
     A_cont, B_cont = get_continuous_system(vehicle_params=vehicle_params)
     if method == "dimensionless":
         Mx, Mu, Mt = get_nondim_matrices(vehicle_params=vehicle_params)
@@ -158,7 +158,7 @@ def get_discrete_system(vehicle_params: dict[str, float | ca.SX], dt: float, met
 
 
 def get_bounds(vehicle_params: dict[str, float | ca.SX]) -> tuple[float | ca.SX]:
-    """Get state and action bounds for the specific vehicle."""
+    """Returns the state, action and noise bounds for the specific vehicle."""
 
     ey_ub = (vehicle_params["lf"] + vehicle_params["lr"]) / 2
     dey_ub = 0.5 * vehicle_params["vx"]
