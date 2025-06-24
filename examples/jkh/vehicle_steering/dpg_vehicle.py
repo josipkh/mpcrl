@@ -163,7 +163,8 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
         # check if the new state is within bounds
         state_out_of_bounds = not self.observation_space.contains(s_new)
-        end_of_maneuver = experiment_config["maneuver"] == "double_lane_change" and self.X >= 200  # [m] maneuver limit
+        end_of_road = 77 * (vehicle_params["lf"] + vehicle_params["lr"])  # [m] maneuver X limit
+        end_of_maneuver = experiment_config["maneuver"] == "double_lane_change" and self.X >= end_of_road
         terminated = state_out_of_bounds or end_of_maneuver
         if terminated:
             trajectories.append(self.trajectory)  # log the trajectory before termination
@@ -258,7 +259,7 @@ class LinearMpc(Mpc[cs.SX]):
         f = self.parameter("f", (nx + nu, 1))
         # A = self.parameter("A", (nx, nx))
         # B = self.parameter("B", (nx, nu))
-        cf = self.parameter("cf", (1, 1))
+        # cf = self.parameter("cf", (1, 1))
 
         # modify the parameter dictionary with learnable ones
         # TODO: handle a learnable cost
@@ -349,8 +350,9 @@ class LinearMpc(Mpc[cs.SX]):
         self.init_solver(opts, solver=solver, type="nlp" if solver in ["ipopt", "fatrop"] else "conic")
 
 
-# %% Defining the agent (subclass of LstdDpgAgent, with updating of the fixed parameters)
-# ---------------------------------------------------------------------------------------
+# %% 
+# Defining the agent (subclass of LstdDpgAgent, with updating of the fixed parameters)
+# ------------------------------------------------------------------------------------
 
 class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
     def __init__(self, mpc: Mpc[cs.SX], *args: Any, **kwargs: Any) -> None:
