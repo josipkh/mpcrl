@@ -96,6 +96,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
     X = 0.0  # global position of the vehicle
     trajectory = []  # current trajectory log
 
+
     def reset(
         self,
         *,
@@ -117,6 +118,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         self.trajectory = []
         self.trajectory.append(np.vstack((self.s.copy(), 0.0)))  # initial action is zero
         return self.s, {}
+    
 
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
         """Computes the stage cost :math:`L(s,a)`."""
@@ -133,6 +135,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
                 + self.w.T @ np.maximum(0, state - ub)
             ).item()
         )
+    
 
     def step(
         self, action: cs.DM
@@ -378,9 +381,14 @@ class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
 # Simulation
 # ----------
 
-if __name__ == "__main__":
+def main(dpg_config=None):
+    """Main training script. Calling with None will use the default configuration."""
+
+    if dpg_config is None:
+        dpg_config = experiment_config
+
     # instantiate the env and wrap it
-    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=experiment_config["max_episode_steps"]))
+    env = MonitorEpisodes(TimeLimit(LtiSystem(), max_episode_steps=dpg_config["max_episode_steps"]))
 
     # now build the MPC and the dict of learnable parameters
     mpc = LinearMpc()
@@ -392,7 +400,7 @@ if __name__ == "__main__":
     )
 
     # build and wrap appropriately the agent
-    match experiment_config["maneuver"]:
+    match dpg_config["maneuver"]:
         case "double_lane_change":
             rollout_length = -1  # will take the whole episode
             update_strategy = UpdateStrategy(1, "on_episode_end")  # episodic
@@ -406,7 +414,7 @@ if __name__ == "__main__":
                 learnable_parameters=learnable_parameters,
                 fixed_parameters=mpc.fixed_parameters,
                 discount_factor=mpc.discount_factor,
-                optimizer=GradientDescent(learning_rate=experiment_config["learning_rate"]),
+                optimizer=GradientDescent(learning_rate=dpg_config["learning_rate"]),
                 update_strategy=update_strategy,
                 rollout_length=rollout_length,
                 exploration=E.OrnsteinUhlenbeckExploration(0.0, 0.05*LtiSystem.a_bnd[1], mode="additive"),
@@ -419,67 +427,83 @@ if __name__ == "__main__":
     )
 
     # launch the training simulation
-    agent.train(env=env, episodes=experiment_config["episodes"], seed=0)
+    agent.train(env=env, episodes=dpg_config["episodes"], seed=0)
 
 
     # %%
     # Display the results
     # -------------------
-    import matplotlib.pyplot as plt
-    from plotting import (
-        plot_trajectory_error_frame,
-        plot_performance,
-        plot_parameters,
-        plot_trajectories
-    )
-
-    X = env.get_wrapper_attr("observations")[0].squeeze().T
-    U = env.get_wrapper_attr("actions")[0].squeeze()
-    R = env.get_wrapper_attr("rewards")[0]
-
-    # scale the logs back to the physical values if needed
-    # the reward is equivalent in both cases (if originally dimensionless)
-    if dimensionless:
-        X = Mx @ X
-        U = (Mu * U).ravel()
-
-    match experiment_config["maneuver"]:
-        case "straight":
-            fig1 = plot_trajectory_error_frame(X, U, vehicle_params)
-        case "double_lane_change":
-            fig1 = plot_trajectories(trajectories, vehicle_params)
-    fig2 = plot_performance(agent, R)
-    fig3 = plot_parameters(agent)
-
-    plt.show(block=False)
-
-    user_input = input("Do you want to save the output? (y/[n]): ").strip().lower()
-
-    if user_input == "y":
-        import datetime
-        import os
-
-        # create a timestamped folder
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        main_folder_path = "/home/josip/mpcrl/examples/jkh/vehicle_steering"
-        new_folder_path = f"output_{timestamp}"
-        folder_path = os.path.join(main_folder_path, new_folder_path)
-        folder_path += f"-{vehicle_size}"  # append vehicle size
-        folder_path += "-transfer" if use_learned_parameters else "-learned"
-        os.makedirs(folder_path, exist_ok=True)
-
-        # save the figures
-        fig1.savefig(os.path.join(folder_path, "trajectory.pdf"))
-        fig2.savefig(os.path.join(folder_path, "performance.pdf"))
-        fig3.savefig(os.path.join(folder_path, "parameters.pdf"))
-
-        # save the final (learned) parameters
-        np.savez(
-            os.path.join(folder_path, "learned_parameters.npz"),
-            **{name: val[-1] for name, val in agent.updates_history.items()}
+    if dpg_config["show_plots"]:
+        import matplotlib.pyplot as plt
+        from plotting import (
+            plot_trajectory_error_frame,
+            plot_performance,
+            plot_parameters,
+            plot_trajectories
         )
 
-        print(f"Output saved in folder: {folder_path}")
-    else:
-        print("Output not saved.")
-    plt.close()
+        X = env.get_wrapper_attr("observations")[0].squeeze().T
+        U = env.get_wrapper_attr("actions")[0].squeeze()
+        R = env.get_wrapper_attr("rewards")[0]
+
+        # scale the logs back to the physical values if needed
+        # the reward is equivalent in both cases (if originally dimensionless)
+        if dimensionless:
+            X = Mx @ X
+            U = (Mu * U).ravel()
+
+        match experiment_config["maneuver"]:
+            case "straight":
+                fig1 = plot_trajectory_error_frame(X, U, vehicle_params)
+            case "double_lane_change":
+                fig1 = plot_trajectories(trajectories, vehicle_params)
+        fig2 = plot_performance(agent, R)
+        fig3 = plot_parameters(agent)
+
+        plt.show(block=False)
+
+        user_input = input("Do you want to save the output? (y/[n]): ").strip().lower()
+
+        if user_input == "y":
+            import datetime
+            import os
+
+            # create a timestamped folder
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            main_folder_path = "/home/josip/mpcrl/examples/jkh/vehicle_steering"
+            new_folder_path = f"output_{timestamp}"
+            folder_path = os.path.join(main_folder_path, new_folder_path)
+            folder_path += f"-{vehicle_size}"  # append vehicle size
+            folder_path += "-transfer" if use_learned_parameters else "-learned"
+            os.makedirs(folder_path, exist_ok=True)
+
+            # save the figures
+            fig1.savefig(os.path.join(folder_path, "trajectory.pdf"))
+            fig2.savefig(os.path.join(folder_path, "performance.pdf"))
+            fig3.savefig(os.path.join(folder_path, "parameters.pdf"))
+
+            # save the final (learned) parameters
+            np.savez(
+                os.path.join(folder_path, "learned_parameters.npz"),
+                **{name: val[-1] for name, val in agent.updates_history.items()}
+            )
+
+            print(f"Output saved in folder: {folder_path}")
+        else:
+            print("Output not saved.")
+        
+        plt.pause(0.001)
+        plt.close('all')
+
+    return agent.policy_performances[-1]  # get the last evaluation
+
+
+# %% 
+# Run the experiment
+# ------------------
+if __name__ == "__main__":
+    # test running the experiment with modified configs
+    # dpg_config = experiment_config.copy()
+    # dpg_config["episodes"] = 3
+    dpg_config = None
+    main(dpg_config=dpg_config)
