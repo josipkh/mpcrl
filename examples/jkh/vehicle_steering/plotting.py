@@ -1,17 +1,9 @@
 import matplotlib.pyplot as plt
-from contextlib import contextmanager
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import numpy as np
 
 plt.rcParams['axes.xmargin'] = 0  # tight x range
-
-@contextmanager
-def try_plot():
-    try:
-        yield
-    except Exception as e:
-        print(f"Plot skipped: {e}")
 
 
 def plot_trajectory_error_frame(X, U, vehicle_params):
@@ -79,36 +71,26 @@ def plot_performance(agent, R):
 
 def plot_parameters(agent):
     """Parameter updates during learning."""
-    fig3, axs3 = plt.subplots(3, 2, constrained_layout=True, sharex=True)
+    n_learnable_params = len(agent.updates_history)
+    n_rows = int(np.ceil(n_learnable_params / 2))
+
+    fig3, axs3 = plt.subplots(n_rows, 2, constrained_layout=True, sharex=True)
+    axs3 = axs3.flatten()
     fig3.suptitle('Parameter values')
-    
-    with try_plot():
-        axs3[0, 0].plot(np.asarray(agent.updates_history["b"]))
-        axs3[0, 0].set_ylabel("$b$")
-    
-    with try_plot():
-        axs3[0, 1].plot(
-            np.stack(
-                [np.asarray(agent.updates_history[n])[:, 0] for n in ("x_lb", "x_ub")], -1
-            ),
-        )
-        axs3[0, 1].set_ylabel("$x$ backoff")
 
-    with try_plot():
-        axs3[1, 0].plot(np.asarray(agent.updates_history["f"]))
-        axs3[1, 0].set_ylabel("$f$")
-
-    # with try_plot():
-    #     axs3[1, 1].plot(np.asarray(agent.updates_history["V0"]))
-    #     axs3[1, 1].set_ylabel("$V_0$")
-
-    # with try_plot():    
-    #     axs3[2, 0].plot(np.asarray(agent.updates_history["A"]).reshape(-1, 16))
-    #     axs3[2, 0].set_ylabel("$A$")
-    
-    # with try_plot():
-    #     axs3[2, 1].plot(np.asarray(agent.updates_history["B"]).squeeze())
-    #     axs3[2, 1].set_ylabel("$B$")
+    for k, (key, values) in enumerate(agent.updates_history.items()):
+        ax = axs3[k]
+        ax.ticklabel_format(useOffset=False)
+        n_elements = values[0].shape[0] if len(values[0].shape) > 0 else 1
+        is_vector = n_elements > 1
+        if is_vector:
+            for j in range(n_elements):
+                ax.plot([value[j] for value in values], label=f'{key}_{j}')
+        else:
+            ax.plot(values)
+        ax.set_ylabel("$"+key+"$")
+        if is_vector:
+            ax.legend()
 
     fig3.align_ylabels()
 
