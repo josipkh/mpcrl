@@ -73,11 +73,18 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
     ns = 4  # number of states
     na = 1  # number of actions
-    A, B = get_discrete_system(vehicle_params=vehicle_params, method="bilinear")  # dynamics matrices, dimensional
+    env_vehicle_params = vehicle_params.copy()
+
+    if experiment_config["maneuver"] == "double_lane_change":
+        # (unknown) friction change for the experiment
+        env_vehicle_params["cf"] *= 1.0
+        env_vehicle_params["cr"] *= 1.0
+
+    A, B = get_discrete_system(vehicle_params=env_vehicle_params, method="bilinear")  # dynamics matrices, dimensional
     s_lb, s_ub, a_lb, a_ub, e_lb, e_ub = get_bounds(vehicle_params=vehicle_params)  # bounds of state, action and disturbance
     s_bnd = (s_lb, s_ub)  # bounds of state
     a_bnd = (a_lb, a_ub)  # bounds of control input
-    e_bnd = (e_lb, e_ub)  # uniform noise bounds
+    e_bnd = (e_lb, e_ub)  # uniform noise bounds (not used for now)
     Q, R, w = get_cost_matrices(vehicle_params=vehicle_params)  # quadratic cost matrices
 
     # make the reward dimensionless if needed
@@ -107,17 +114,19 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         super().reset(seed=seed, options=options)
         match experiment_config["maneuver"]:
             case "straight":
-                ey0 = 1.0 if vehicle_size == "large" else 0.1
+                ey0 = 1/3 * vehicle_params["l"]  # start from an offset position
             case "double_lane_change":
                 ey0 = 0.0
             case _:
                 raise ValueError("Unknown maneuver specified.")
-        s0 = [ey0, 0.0, 0.0, 0.0]
-        self.s = np.asarray(s0).reshape(self.ns, 1)
+        s0 = np.asarray([ey0, 0.0, 0.0, 0.0]).reshape(self.ns, 1)
+        self.s = s0  # should be physical
         self.X = 0.0  # reset the long. position
         self.trajectory = []
         self.trajectory.append(np.vstack((self.s.copy(), 0.0)))  # initial action is zero
-        return self.s, {}
+        if dimensionless:
+            s0 = Mx_inv @ s0  # transform to a dimensionless observation
+        return s0, {}
     
 
     def get_stage_cost(self, state: npt.NDArray[np.floating], action: float) -> float:
@@ -159,14 +168,14 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
         road_bank_angle = np.deg2rad(road_bank_angle)
         g = 9.81  # gravity
         s_new += np.asarray([[0.0], [g], [0.0], [0.0]]) * np.sin(road_bank_angle)
-        self.trajectory.append(np.vstack((s_new,action)))
+        self.trajectory.append(np.vstack((s_new, action)))
 
         # update the global longitudinal position
         self.X = self.X + vehicle_params["vx"] * vehicle_params["dt"]  # acceptably wrong (assumes small steering angles)
 
         # check if the new state is within bounds
         state_out_of_bounds = not self.observation_space.contains(s_new)
-        end_of_road = 77 * (vehicle_params["lf"] + vehicle_params["lr"])  # [m] maneuver X limit
+        end_of_road = 77 * vehicle_params["l"]  # [m] maneuver X limit
         end_of_maneuver = experiment_config["maneuver"] == "double_lane_change" and self.X >= end_of_road
         terminated = state_out_of_bounds or end_of_maneuver
         if terminated:
@@ -238,7 +247,10 @@ class LinearMpc(Mpc[cs.SX]):
             "f": np.zeros(nx + nu),  # affine term in the cost
             # "A": A_fixed,
             # "B": B_fixed[:,0,np.newaxis],  # just the steering input
-            # "cf": 0.5 * np.asarray(vehicle_params["cf"])
+            # "cf": np.asarray([1.0]), # relative gain
+            # "cr": np.asarray([1.0]), # relative gain
+            # "cf": np.asarray(vehicle_params["cf"]), # absolute value
+            # "cr": np.asarray(vehicle_params["cr"]), # absolute value
         }
 
     fixed_parameters = {
@@ -254,23 +266,24 @@ class LinearMpc(Mpc[cs.SX]):
         super().__init__(nlp, N)
 
         # parameters
-        # V0 = self.parameter("V0", (nx,))
-        # x_lb = self.parameter("x_lb", (nx,))
-        # x_ub = self.parameter("x_ub", (nx,))
         x_lb, x_ub = np.zeros_like(x_bnd[0]), np.zeros_like(x_bnd[0])
         b = self.parameter("b", (nx, 1))
         f = self.parameter("f", (nx + nu, 1))
+        # cf = self.parameter("cf", (1, 1))
+        # cr = self.parameter("cr", (1, 1))
+        # V0 = self.parameter("V0", (nx,))
+        # x_lb = self.parameter("x_lb", (nx,))
+        # x_ub = self.parameter("x_ub", (nx,))
         # A = self.parameter("A", (nx, nx))
         # B = self.parameter("B", (nx, nu))
-        # cf = self.parameter("cf", (1, 1))
 
         # modify the parameter dictionary with learnable ones
         # TODO: handle a learnable cost
         mpc_vehicle_params = vehicle_params.copy()  # a copy which might contain symbolics
         for key in self.learnable_pars_init.keys():
             if key in mpc_vehicle_params.keys():
-                mpc_vehicle_params[key] = locals()[key]  # assign the related parameter (same name must be used)
-                # TODO * vehicle_params[key], [0-1] * true_value ?
+                mpc_vehicle_params[key] = locals()[key]#  * vehicle_params[key] # assign the related parameter (same name must be used)
+                # [0-1] * true_value, for better numerics
 
         # (possibly) learnable system matrices
         if dimensionless:
@@ -495,7 +508,10 @@ def main(dpg_config=None):
         plt.pause(0.001)
         plt.close('all')
 
-    return agent.policy_performances[-1]  # get the last evaluation
+    try:
+        return agent.policy_performances[-1]  # get the last evaluation
+    except IndexError:
+        return np.inf  # probably an error occurred
 
 
 # %% 

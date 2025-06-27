@@ -21,13 +21,14 @@ vehicle_configs = {
         "vx": 15.6,     # [m/s]     longitudinal vehicle speed
         "lf": 1.1578,   # [m]       distance from the center of gravity to the front axle
         "lr": 1.4642,   # [m]       distance from the center of gravity to the rear axle
+        "l": 2.622,     # [m]       total wheelbase
         "iz": 2675.7,   # [kg*m^2]  vehicle moment of inertia
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
         "cost": {
-            "Q": np.diag([1, 1e-3, 1, 1e-3]),  # quadratic cost matrix for states
-            "R": np.diag([1]),  # quadratic cost matrix for actions
+            "Q": np.diag([1.0, 1e-3, 1.0, 1e-3]),  # quadratic cost matrix for states
+            "R": np.diag([1.0]),  # quadratic cost matrix for actions
             "w": np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
         },
     },
@@ -38,14 +39,15 @@ vehicle_configs = {
         "vx": 1.5,      # [m/s]     longitudinal vehicle speed
         "lf": 0.1115,   # [m]       distance from the center of gravity to the front axle
         "lr": 0.141,    # [m]       distance from the center of gravity to the rear axle
+        "l": 0.2525,    # [m]       total wheelbase
         "iz": 0.0337,   # [kg*m^2]  vehicle moment of inertia
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
         "cost": {
-            "Q": np.diag([107.83, 0.10816, 1, 1e-3]),  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
-            "R": np.diag([1]),  # quadratic cost matrix for actions
-            "w": np.asarray([[1038.416], [1040], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
+            "Q": np.diag([107.83, 0.10816, 1.0, 1e-3]),  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
+            "R": np.diag([1.0]),  # quadratic cost matrix for actions
+            "w": np.asarray([[1038.416], [1040.0], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
         },
     }
 }
@@ -160,10 +162,10 @@ def get_discrete_system(vehicle_params: dict[str, float | ca.SX], dt: float | No
 def get_bounds(vehicle_params: dict[str, float | ca.SX]) -> tuple[float | ca.SX]:
     """Returns the state, action and noise bounds for the specific vehicle."""
 
-    ey_ub = (vehicle_params["lf"] + vehicle_params["lr"]) / 2
+    ey_ub = vehicle_params["l"] / 2
     dey_ub = 0.5 * vehicle_params["vx"]
     epsi_ub = np.deg2rad(45)
-    depsi_ub = 100 * vehicle_params["vx"] / (vehicle_params["lf"] + vehicle_params["lr"])  # pretty large
+    depsi_ub = 100 * vehicle_params["vx"] / vehicle_params["l"]  # pretty large
 
     s_ub = np.asarray([[ey_ub], [dey_ub], [epsi_ub], [depsi_ub]])
     s_lb = np.asarray([[-ub[0]] for ub in s_ub])
@@ -194,11 +196,11 @@ def get_cost_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndar
 def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray]:
     """Returns the matrices for transforming the system to a non-dimensional form."""
     vx = vehicle_params["vx"]
-    L = vehicle_params["lf"] + vehicle_params["lr"]
+    l = vehicle_params["l"]
 
-    Mx = np.diag([L, vx, 1.0, vx/L])  # state is [ey, ey_dot, epsi, epsi_dot]
+    Mx = np.diag([l, vx, 1.0, vx/l])  # state is [ey, ey_dot, epsi, epsi_dot]
     Mu = np.diag([1.0])  # input is an angle, no transformation needed
-    Mt = np.diag([L/vx])  # time transformation
+    Mt = np.diag([l/vx])  # time transformation
     return Mx, Mu, Mt 
 
 

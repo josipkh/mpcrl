@@ -117,9 +117,9 @@ def plot_trajectories(trajectories, vehicle_params):
                 axs4[k].step(range(traj.shape[0]), vehicle_params["isw"]*np.rad2deg(traj[:,k,:]), color=color, where="post")
                 axs4[k].axhline( steer_max, color="r", linestyle='--')
                 axs4[k].axhline(-steer_max, color="r", linestyle='--')
-    for k in range(4):
+    for k in range(len(labels)):
         axs4[k].set_ylabel(labels[k])
-    axs4[3].set_xlabel('$k$')
+    axs4[-1].set_xlabel('$k$')
 
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
