@@ -16,13 +16,15 @@ def contains_symbolics(object) -> bool:
         return False
     elif isinstance(object, np.ndarray):
         return False
-    elif isinstance(object, ca.SX) or isinstance(object, ca.MX) or isinstance(object, ca.DM):
+    elif isinstance(object, casadi_types):
         return True
     elif isinstance(object, dict):
         for _, value in object.items():
             if isinstance(value, casadi_types):
                 return True
         return False
+    elif isinstance(object, (list, tuple)):
+        return any(isinstance(item, casadi_types) for item in object)
     else:
         raise TypeError("unknown object type")
     

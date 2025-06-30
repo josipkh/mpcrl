@@ -64,11 +64,11 @@ def get_A_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndarray | 
     iz = vehicle_params["iz"]
 
     row_1 = (0.0, 1.0, 0.0, 0.0)
-    row_2 = (0.0,-(2*cf+2*cr)/(m*vx), (2*cf+2*cr)/m, -(2*cf*lf-2*cr*lr)/(m*vx))
+    row_2 = (0.0, -(2*cf+2*cr)/(m*vx), (2*cf+2*cr)/m, -(2*cf*lf-2*cr*lr)/(m*vx))
     row_3 = (0.0, 0.0, 0.0, 1.0)
     row_4 = (0.0, -(2*cf*lf-2*cr*lr)/(iz*vx), (2*cf*lf-2*cr*lr)/iz, -(2*cf*lf**2+2*cr*lr**2)/(iz*vx))
     
-    if contains_symbolics(vehicle_params):
+    if contains_symbolics([cf, cr, m, vx, lf, lr, iz]):
         return ca.vertcat(
             ca.horzcat(*row_1),
             ca.horzcat(*row_2),
@@ -86,7 +86,7 @@ def get_B_steer_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndar
     lf = vehicle_params["lf"]
     iz = vehicle_params["iz"]
 
-    if any(isinstance(i, ca.SX) for i in [cf, m, lf, iz]):
+    if contains_symbolics([cf, m, lf, iz]):
         return ca.vertcat(
             0.0,
             2*cf/m,
@@ -110,7 +110,7 @@ def get_B_ref_cont(vehicle_params: dict[str, float | ca.SX] | None) -> np.ndarra
     row_2 = -(2*cf*lf-2*cr*lr)/(m*vx)-vx
     row_4 = -(2*cf*lf**2+2*cr*lr**2)/(iz*vx)
 
-    if contains_symbolics(vehicle_params):
+    if contains_symbolics([cf, cr, m, vx, lf, lr, iz]):
         return ca.vertcat(
             0.0,
             row_2,
