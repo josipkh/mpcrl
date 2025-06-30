@@ -105,3 +105,20 @@ def get_double_lane_change_data(X: np.ndarray, horizon: int, vehicle_params: dic
     road_curvature = compute_curvature(p_xy=XY, dt=vehicle_params["dt"])  # (min, max) = (-0.024257, 0.027217)
 
     return road_curvature, Y, psi
+
+
+def frenet2inertial(
+    e1: np.ndarray, e2: np.ndarray, yaw_ref: np.ndarray, vx: float, dt: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Converts a trajectory from the body-fixed to the inertial coordinate frame.
+    Based on section 2.7 in https://link.springer.com/book/10.1007/978-1-4614-1433-9
+    Constant longitudinal speed is assumed.
+    """
+    x_int = vx * dt * np.cumsum(np.cos(yaw_ref))
+    x = x_int - e1 * np.sin(e2 + yaw_ref)
+
+    y_int = vx * dt * np.cumsum(np.sin(yaw_ref))
+    y = y_int + e1 * np.cos(e2 + yaw_ref)
+
+    return x, y

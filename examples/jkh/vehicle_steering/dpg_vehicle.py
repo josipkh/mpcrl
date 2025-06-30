@@ -175,7 +175,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
 
         # check if the new state is within bounds
         state_out_of_bounds = not self.observation_space.contains(s_new)
-        end_of_road = 77 * vehicle_params["l"]  # [m] maneuver X limit
+        end_of_road = 50 * vehicle_params["l"]  # [m] maneuver X limit
         end_of_maneuver = experiment_config["maneuver"] == "double_lane_change" and self.X >= end_of_road
         terminated = state_out_of_bounds or end_of_maneuver
         if terminated:
@@ -449,29 +449,24 @@ def main(dpg_config=None):
     if dpg_config["show_plots"]:
         import matplotlib.pyplot as plt
         from plotting import (
-            plot_trajectory_error_frame,
+            plot_trajectories_error_frame,
             plot_performance,
-            plot_parameters,
-            plot_trajectories
+            plot_parameters,            
+            plot_trajectories_inertial_frame,
         )
-
-        X = env.get_wrapper_attr("observations")[0].squeeze().T
-        U = env.get_wrapper_attr("actions")[0].squeeze()
+        
         R = env.get_wrapper_attr("rewards")[0]
 
-        # scale the logs back to the physical values if needed
-        # the reward is equivalent in both cases (if originally dimensionless)
-        if dimensionless:
-            X = Mx @ X
-            U = (Mu * U).ravel()
-
-        match experiment_config["maneuver"]:
-            case "straight":
-                fig1 = plot_trajectory_error_frame(X, U, vehicle_params)
-            case "double_lane_change":
-                fig1 = plot_trajectories(trajectories, vehicle_params)
+        vehicle_params["maneuver"] = experiment_config["maneuver"]  # for easier argument passing
+        if vehicle_params["maneuver"] == "straight":
+            X = env.get_wrapper_attr("observations")[0][:-1, :].squeeze()
+            U = env.get_wrapper_attr("actions")[0].squeeze()
+            trajectories = [[np.concatenate([X[k, :], np.array([U[k]])]) for k in range(len(X))]]
+        
+        fig1 = plot_trajectories_error_frame(trajectories, vehicle_params)
         fig2 = plot_performance(agent, R)
         fig3 = plot_parameters(agent)
+        fig4 = plot_trajectories_inertial_frame(trajectories, vehicle_params)
 
         plt.show(block=False)
 
@@ -491,9 +486,10 @@ def main(dpg_config=None):
             os.makedirs(folder_path, exist_ok=True)
 
             # save the figures
-            fig1.savefig(os.path.join(folder_path, "trajectory.pdf"))
+            fig1.savefig(os.path.join(folder_path, "trajectory_error_frame.pdf"))
             fig2.savefig(os.path.join(folder_path, "performance.pdf"))
             fig3.savefig(os.path.join(folder_path, "parameters.pdf"))
+            fig4.savefig(os.path.join(folder_path, "trajectory_inertial_frame.pdf"))
 
             # save the final (learned) parameters
             np.savez(
