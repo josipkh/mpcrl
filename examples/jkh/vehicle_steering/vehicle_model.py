@@ -4,6 +4,7 @@ The system model is based on section 2.5 (eq. 2.45) in "Rajamani - Vehicle Dynam
 States are the lateral and heading errors and their derivatives (x = [ey ey_dot epsi epsi_dot]).
 The action is the (wheel) steering angle (u = delta).
 The reference yaw rate is modelled as an additional control input (will be fixed at runtime).
+The quadratic cost matrices are defined by the square root of the diagonal elements, which are subsequently squared to ensure PSDness.
 """
 
 import numpy as np
@@ -26,11 +27,9 @@ vehicle_configs = {
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
-        "cost": {
-            "Q": np.diag([1.0, 1e-3, 1.0, 1e-3]),  # quadratic cost matrix for states
-            "R": np.diag([1.0]),  # quadratic cost matrix for actions
-            "w": np.asarray([[1e2], [1e2], [1e2], [1e2]])  # penalty weight for bound violations
-        },
+        "q_diag_sqrt": np.sqrt(np.asarray([1.0, 1e-3, 1.0, 1e-3])),  # quadratic cost matrix weights for states (will be squared later)
+        "r_diag_sqrt": np.sqrt(np.asarray([1.0])),  # quadratic cost matrix weights for actions (will be squared later)
+        "w": np.asarray([[1e2], [1e2], [1e2], [1e2]]),  # penalty weight for bound violations
     },
     "small": {
         "cf": 8.25,     # [N/rad]   front cornering stiffness (for one tire)
@@ -44,11 +43,9 @@ vehicle_configs = {
         "isw": 13,      # [-]       steering ratio
         "sw_max": float(np.deg2rad(90)),  # [rad] maximum steering wheel angle (wheel angle = steering wheel angle / steering ratio)
         "dt": 0.05,     # [s]       sampling time
-        "cost": {
-            "Q": np.diag([107.83, 0.10816, 1.0, 1e-3]),  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
-            "R": np.diag([1.0]),  # quadratic cost matrix for actions
-            "w": np.asarray([[1038.416], [1040.0], [1e2], [1e2]])  # w.T = W.T @ (Mx @ mx_inv)
-        },
+        "q_diag_sqrt": np.sqrt(np.asarray([107.83, 0.10816, 1.0, 1e-3])),  # q = (Mx @ mx_inv).T @ Q @ (Mx @ mx_inv)
+        "r_diag_sqrt": np.sqrt(np.asarray([1.0])),  # quadratic cost matrix for actions
+        "w": np.asarray([[1038.416], [1040.0], [1e2], [1e2]]),  # w.T = W.T @ (Mx @ mx_inv)
     }
 }
 
@@ -181,14 +178,16 @@ def get_bounds(vehicle_params: dict[str, float | ca.SX]) -> tuple[float | ca.SX]
 
 def get_cost_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.ndarray, np.ndarray]:
     """Returns the quadratic cost matrices for the controller (x'Qx + u'Ru)."""
-    Q = vehicle_params["cost"]["Q"]
-    R = vehicle_params["cost"]["R"]
-    w = vehicle_params["cost"]["w"]
+    q_diag_sqrt = vehicle_params["q_diag_sqrt"]
+    r_diag_sqrt = vehicle_params["r_diag_sqrt"]
+    w = vehicle_params["w"]
 
-    # TODO: handle the symbolic case
-    Q = ca.SX(Q) if contains_symbolics(Q) else Q
-    R = ca.SX(R) if contains_symbolics(R) else R
-    w = ca.SX(w) if contains_symbolics(w) else w
+    # the matrices are defined through their Cholesky decomposition
+    Lq = ca.diag(q_diag_sqrt) if contains_symbolics(q_diag_sqrt) else np.diag(q_diag_sqrt)
+    Q = Lq @ Lq.T
+
+    Lr = ca.diag(r_diag_sqrt) if contains_symbolics(r_diag_sqrt) else np.diag(r_diag_sqrt)
+    R = Lr @ Lr.T
 
     return Q, R, w
 
@@ -206,12 +205,12 @@ def get_nondim_matrices(vehicle_params: dict[str, float | ca.SX]) -> tuple[np.nd
 
 if __name__ == "__main__":
     # some simple tests to check the implementation
-    vehicle_size = "small"
+    vehicle_size = "large"
     vehicle_params = vehicle_configs[vehicle_size]
     dt = vehicle_params["dt"]
 
     vehicle_params["cf"] = ca.SX.sym("cf")  # convert to symbolic for testing
-    vehicle_params["cost"]["R"] = ca.SX.sym("R")
+    vehicle_params["r_diag_sqrt"] = ca.SX.sym("r_diag_sqrt")
 
     A_disc, B_disc = get_discrete_system(vehicle_params=vehicle_params, dt=dt)
     print("Discrete A matrix:\n", A_disc)

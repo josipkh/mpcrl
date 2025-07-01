@@ -33,7 +33,7 @@ from mpcrl import (
     UpdateStrategy,
 )
 from mpcrl import exploration as E
-from mpcrl.optim import GradientDescent
+from mpcrl.optim import Adam
 from mpcrl.util.control import dlqr
 from mpcrl.wrappers.agents import Log, RecordUpdates
 from mpcrl.wrappers.envs import MonitorEpisodes
@@ -197,6 +197,7 @@ class LtiSystem(gym.Env[npt.NDArray[np.floating], float]):
             action = (Mu_inv * action).item()  # transform back to dimensionless action
 
         r = self.get_stage_cost(s_new, action)  # use the dimensionless state for the reward
+        # r += 100 if state_out_of_bounds else 0  # add the penalty for going out of bounds
 
         return s_new, r, terminated, truncated, info
     
@@ -240,21 +241,24 @@ class LinearMpc(Mpc[cs.SX]):
         learnable_pars_init = {key: value for key, value in learned_parameters.items()}
     else:
         learnable_pars_init = {
-            # "V0": np.zeros(nx),  # cost modification, V0*x0
-            # "x_lb": np.zeros(nx),  # constraint backoff
-            # "x_ub": np.zeros(nx),  # constraint backoff
-            "b": np.zeros(nx),  # affine term in the dynamics
-            "f": np.zeros(nx + nu),  # affine term in the cost
-            # "A": A_fixed,
-            # "B": B_fixed[:,0,np.newaxis],  # just the steering input
+            # "b": np.zeros(nx),  # affine term in the dynamics
+            # "f": np.zeros(nx + nu),  # linear term in the cost
             # "cf": np.asarray([1.0]), # relative gain
             # "cr": np.asarray([1.0]), # relative gain
             # "cf": np.asarray(vehicle_params["cf"]), # absolute value
             # "cr": np.asarray(vehicle_params["cr"]), # absolute value
+            "q_diag_sqrt": vehicle_params["q_diag_sqrt"],  # sqrt of cost weights for states
+            "r_diag_sqrt": vehicle_params["r_diag_sqrt"],  # sqrt of cost weights for actions
+
+            # "V0": np.zeros(nx),  # cost modification, V0*x0
+            # "x_lb": np.zeros(nx),  # constraint backoff
+            # "x_ub": np.zeros(nx),  # constraint backoff
+            # "A": A_fixed,
+            # "B": B_fixed[:,0,np.newaxis],  # just the steering input
         }
 
     fixed_parameters = {
-        "w": np.zeros((1,horizon)),  # fixed disturbance (yaw rate reference)
+        "yaw_rate_ref": np.zeros((1,horizon)),  # fixed disturbance (yaw rate reference)
     }
 
     def __init__(self) -> None:
@@ -266,19 +270,30 @@ class LinearMpc(Mpc[cs.SX]):
         super().__init__(nlp, N)
 
         # parameters
-        x_lb, x_ub = np.zeros_like(x_bnd[0]), np.zeros_like(x_bnd[0])
-        b = self.parameter("b", (nx, 1))
-        f = self.parameter("f", (nx + nu, 1))
-        # cf = self.parameter("cf", (1, 1))
-        # cr = self.parameter("cr", (1, 1))
-        # V0 = self.parameter("V0", (nx,))
-        # x_lb = self.parameter("x_lb", (nx,))
-        # x_ub = self.parameter("x_ub", (nx,))
-        # A = self.parameter("A", (nx, nx))
-        # B = self.parameter("B", (nx, nu))
+        b = self.parameter("b", (nx, 1)) if "b" in self.learnable_pars_init.keys() else np.zeros((nx, 1))
+        f = self.parameter("f", (nx + nu, 1)) if "f" in self.learnable_pars_init.keys() else np.zeros((nx + nu, 1))
 
-        # modify the parameter dictionary with learnable ones
-        # TODO: handle a learnable cost
+        if "cf" in self.learnable_pars_init.keys():
+            cf = self.parameter("cf", (1, 1))
+        if "cr" in self.learnable_pars_init.keys():
+            cr = self.parameter("cr", (1, 1))
+
+        if "x_lb" in self.learnable_pars_init.keys() and "x_ub" in self.learnable_pars_init.keys():
+            x_lb = self.parameter("x_lb", (nx,))
+            x_ub = self.parameter("x_ub", (nx,))
+        else:
+            x_lb, x_ub = np.zeros_like(x_bnd[0]), np.zeros_like(x_bnd[0])
+
+        if "q_diag_sqrt" in self.learnable_pars_init.keys():
+            q_diag_sqrt = self.parameter("q_diag_sqrt", (nx,))
+        if "r_diag_sqrt" in self.learnable_pars_init.keys():
+            r_diag_sqrt = self.parameter("r_diag_sqrt", (nu,))
+
+        # V0 = self.parameter("V0", (nx,))
+        # A = self.parameter("A", (nx, nx))
+        # B = self.parameter("B", (nx, nu))        
+
+        # update the parameter dictionary with learnable ones
         mpc_vehicle_params = vehicle_params.copy()  # a copy which might contain symbolics
         for key in self.learnable_pars_init.keys():
             if key in mpc_vehicle_params.keys():
@@ -295,7 +310,7 @@ class LinearMpc(Mpc[cs.SX]):
         x, _ = self.state("x", nx, bound_initial=False)
         u, _ = self.action("u", nu, lb=u_bnd[0], ub=u_bnd[1])
         s, _, _ = self.variable("s", (nx, N), lb=0)
-        _ = self.disturbance("w", 1)  # for the yaw rate reference
+        _ = self.disturbance("yaw_rate_ref", 1)  # for the yaw rate reference
 
         # dynamics (x_+ = A x + B u + D w + c)
         B = B_learnable[:,0] if contains_symbolics(B_learnable) else B_learnable[:,0,np.newaxis]  # steering input
@@ -312,12 +327,13 @@ class LinearMpc(Mpc[cs.SX]):
         self.constraint("du_ub", du, "<=",  du_ub)
 
         # objective
-        Q, R, w = get_cost_matrices(vehicle_params=vehicle_params)
+        Q, R, w = get_cost_matrices(vehicle_params=mpc_vehicle_params)
         if dimensionless:
             Q = Mx.T @ Q @ Mx
             R = Mu.T @ R @ Mu
             w = Mx @ w
-        S = cs.DM(dlqr(self.A_fixed, self.B_fixed[:,0,np.newaxis], Q, R)[1])  # terminal cost matrix, calculated with the initial guess for A, B
+        S = cs.DM(dlqr(self.A_fixed, self.B_fixed[:,0,np.newaxis],
+                       *get_cost_matrices(vehicle_params)[:2])[1])  # terminal cost matrix, calculated with the initial guess for A, B, Q, R
         gammapowers = cs.DM(gamma ** np.arange(N)).T
         objective = 0.0
         for k in range(N):
@@ -387,7 +403,7 @@ class MyLstdDpgAgent(LstdDpgAgent[cs.SX, float]):
         yaw_rate_ref = env.unwrapped.get_yaw_rate_ref(self._horizon)
         if dimensionless:
             yaw_rate_ref = Mt * yaw_rate_ref
-        self.fixed_parameters.update(zip("w", yaw_rate_ref))
+        self.fixed_parameters.update(zip("yaw_rate_ref", yaw_rate_ref))
 
 
 # %%
@@ -427,7 +443,7 @@ def main(dpg_config=None):
                 learnable_parameters=learnable_parameters,
                 fixed_parameters=mpc.fixed_parameters,
                 discount_factor=mpc.discount_factor,
-                optimizer=GradientDescent(learning_rate=dpg_config["learning_rate"]),
+                optimizer=Adam(learning_rate=dpg_config["learning_rate"]),
                 update_strategy=update_strategy,
                 rollout_length=rollout_length,
                 exploration=E.OrnsteinUhlenbeckExploration(0.0, 0.05*LtiSystem.a_bnd[1], mode="additive"),
@@ -458,14 +474,14 @@ def main(dpg_config=None):
         R = env.get_wrapper_attr("rewards")[0]
 
         vehicle_params["maneuver"] = experiment_config["maneuver"]  # for easier argument passing
-        if vehicle_params["maneuver"] == "straight":
+        if vehicle_params["maneuver"] == "straight":  # only one trajectory available
             X = env.get_wrapper_attr("observations")[0][:-1, :].squeeze()
             U = env.get_wrapper_attr("actions")[0].squeeze()
-            trajectories = [[np.concatenate([X[k, :], np.array([U[k]])]) for k in range(len(X))]]
+            trajectories.append([np.concatenate([X[k, :], np.array([U[k]])]) for k in range(len(X))])
         
         fig1 = plot_trajectories_error_frame(trajectories, vehicle_params)
         fig2 = plot_performance(agent, R)
-        fig3 = plot_parameters(agent)
+        fig3 = plot_parameters(agent, vehicle_params)
         fig4 = plot_trajectories_inertial_frame(trajectories, vehicle_params)
 
         plt.show(block=False)

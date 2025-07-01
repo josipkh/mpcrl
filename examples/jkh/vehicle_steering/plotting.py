@@ -5,7 +5,7 @@ import numpy as np
 from utils import get_double_lane_change_data, frenet2inertial
 
 plt.rcParams['axes.xmargin'] = 0  # tight x range
-
+# choosing colormaps: https://matplotlib.org/stable/users/explain/colors/colormaps.html
 
 def plot_trajectory_error_frame(X, U, vehicle_params):
     """A single trajectory in the error frame, with the input and input rate."""
@@ -70,7 +70,7 @@ def plot_performance(agent, R):
         print("Could not plot both the performance and policy gradient.")
 
 
-def plot_parameters(agent):
+def plot_parameters(agent, vehicle_params):
     """Parameter updates during learning."""
     n_learnable_params = len(agent.updates_history)
     n_rows = int(np.ceil(n_learnable_params / 2))
@@ -89,7 +89,18 @@ def plot_parameters(agent):
                 ax.plot([value[j] for value in values], label=f'{key}_{j}')
         else:
             ax.plot(values)
-        ax.set_ylabel("$"+key+"$")
+
+        if key in vehicle_params.keys():
+            if is_vector:
+                [ax.axhline(vehicle_params[key][k], color="r", linestyle='--') for k in range(len(vehicle_params[key]))]
+            else:
+                ax.axhline(vehicle_params[key], color="r", linestyle='--')
+
+        if "_diag_sqrt" in key:
+            label_str = r'$\sqrt{{\mathrm{{diag}}({})}}$'.format(key[0].upper())
+        else:
+            label_str = "$"+key+"$"
+        ax.set_ylabel(label_str)
         if is_vector:
             ax.legend()
 
@@ -108,7 +119,7 @@ def plot_trajectories_error_frame(trajectories, vehicle_params):
             X=trajectory[:, 0:4].T, U=trajectory[:, 4].T, vehicle_params=vehicle_params
             )
     else:
-        cmap = plt.get_cmap('Blues')
+        cmap = plt.get_cmap('winter')
         norm = mcolors.Normalize(vmin=1, vmax=N)
         steer_max = np.rad2deg(vehicle_params["sw_max"])
 
@@ -191,7 +202,7 @@ def plot_trajectories_inertial_frame(trajectories, vehicle_params):
             )
     else:
         vx, dt = vehicle_params["vx"], vehicle_params["dt"]
-        cmap = plt.get_cmap('Blues')
+        cmap = plt.get_cmap('winter')
         norm = mcolors.Normalize(vmin=1, vmax=N)
         steer_max = np.rad2deg(vehicle_params["sw_max"])
 
